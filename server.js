@@ -30,7 +30,9 @@ if (!SQUARE_ACCESS_TOKEN || !SQUARE_LOCATION_ID) {
   console.warn("WARNING: SQUARE_ACCESS_TOKEN or SQUARE_LOCATION_ID is not set.");
 }
 if (!CTE_SHEETS_WEBHOOK_URL || !CTE_SHEETS_WEBHOOK_SECRET) {
-  console.warn("WARNING: CTE_SHEETS_WEBHOOK_URL or CTE_SHEETS_WEBHOOK_SECRET is not set.");
+  console.warn(
+    "WARNING: CTE_SHEETS_WEBHOOK_URL or CTE_SHEETS_WEBHOOK_SECRET is not set."
+  );
 }
 
 // Convert dollars to integer cents
@@ -41,9 +43,9 @@ function toCents(total) {
 }
 
 /**
- * Minimal JSON POST helper (no extra dependencies)
+ * POST JSON with redirect following (Apps Script often redirects 302 to googleusercontent)
  */
-function postJson(urlString, payload, timeoutMs = 8000) {
+function postJson(urlString, payload, timeoutMs = 8000, maxRedirects = 5) {
   return new Promise((resolve, reject) => {
     const url = new URL(urlString);
     const body = JSON.stringify(payload);
@@ -62,13 +64,48 @@ function postJson(urlString, payload, timeoutMs = 8000) {
     const req = https.request(options, (res) => {
       let data = "";
       res.on("data", (chunk) => (data += chunk));
-      res.on("end", () => {
+      res.on("end", async () => {
         const status = res.statusCode || 0;
+        const headers = res.headers || {};
+        const location = headers.location;
+
+        // Follow redirects (including 302) by re-POSTing to the new location
+        if (
+          location &&
+          status >= 300 &&
+          status < 400 &&
+          maxRedirects > 0
+        ) {
+          try {
+            const nextUrl = new URL(location, url).toString();
+            const nextResp = await postJson(
+              nextUrl,
+              payload,
+              timeoutMs,
+              maxRedirects - 1
+            );
+            // Preserve original redirect info for debugging
+            nextResp.redirectedFrom = urlString;
+            nextResp.redirectedTo = nextUrl;
+            nextResp.redirectStatus = status;
+            return resolve(nextResp);
+          } catch (err) {
+            return reject(err);
+          }
+        }
+
+        // Try parse JSON; fall back to raw text
         let parsed = null;
         try {
           parsed = JSON.parse(data);
         } catch (_) {}
-        resolve({ status, raw: data, json: parsed });
+
+        resolve({
+          status,
+          headers,
+          raw: data,
+          json: parsed,
+        });
       });
     });
 
@@ -105,6 +142,7 @@ app.get("/", (req, res) => {
 
 // Debug: confirm env presence (never returns secrets)
 app.get("/env-check", (req, res) => {
+  const u = CTE_SHEETS_WEBHOOK_URL || "";
   res.json({
     ok: true,
     square: {
@@ -116,15 +154,11 @@ app.get("/env-check", (req, res) => {
     sheets: {
       webhookUrlSet: Boolean(CTE_SHEETS_WEBHOOK_URL),
       webhookSecretSet: Boolean(CTE_SHEETS_WEBHOOK_SECRET),
-      webhookUrlLooksLikeSheetsEditLink: Boolean(
-        CTE_SHEETS_WEBHOOK_URL &&
-          CTE_SHEETS_WEBHOOK_URL.includes("docs.google.com/spreadsheets")
-      ),
-      webhookUrlLooksLikeAppsScriptExec: Boolean(
-        CTE_SHEETS_WEBHOOK_URL &&
-          CTE_SHEETS_WEBHOOK_URL.includes("script.google.com") &&
-          CTE_SHEETS_WEBHOOK_URL.includes("/exec")
-      ),
+      webhookUrlLooksLikeSheetsEditLink: u.includes("docs.google.com/spreadsheets"),
+      webhookUrlLooksLikeAppsScriptExec:
+        u.includes("script.google.com") && u.includes("/exec"),
+      webhookUrlLooksLikeGoogleUserContent:
+        u.includes("script.googleusercontent.com"),
     },
   });
 });
@@ -155,6 +189,10 @@ app.get("/test-sheets", async (req, res) => {
       bookingRef,
       sheetsResponse: {
         status: resp.status,
+        redirectedFrom: resp.redirectedFrom,
+        redirectedTo: resp.redirectedTo,
+        redirectStatus: resp.redirectStatus,
+        locationHeader: resp.headers?.location,
         json: resp.json,
         raw: resp.json ? undefined : resp.raw,
       },
@@ -246,8 +284,12 @@ app.post("/create-checkout", async (req, res) => {
       source: "website-widget",
       createdAt: new Date().toISOString(),
     })
-      .then((resp) => console.log("Sheets write status:", resp.status, resp.json || resp.raw))
-      .catch((err) => console.error("Sheets write failed:", err?.message || err));
+      .then((resp) =>
+        console.log("Sheets write status:", resp.status, resp.json || resp.raw)
+      )
+      .catch((err) =>
+        console.error("Sheets write failed:", err?.message || err)
+      );
 
     res.json({ ok: true, bookingRef, squareCheckoutUrl });
   } catch (err) {
@@ -257,4 +299,6 @@ app.post("/create-checkout", async (req, res) => {
 });
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`Coastal Tide backend listening on port ${PORT}`));
+app.listen(PORT, () =>
+  console.log(`Coastal Tide backend listening on port ${PORT}`)
+);
