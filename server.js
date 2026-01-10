@@ -45,7 +45,7 @@ function toCents(total) {
 /**
  * POST JSON with redirect following (Apps Script often redirects 302 to googleusercontent)
  */
-function postJson(urlString, payload, timeoutMs = 8000, maxRedirects = 5) {
+function postJson(urlString, payload, timeoutMs = 25000, maxRedirects = 5) {
   return new Promise((resolve, reject) => {
     const url = new URL(urlString);
     const body = JSON.stringify(payload);
