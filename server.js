@@ -43,7 +43,9 @@ function toCents(total) {
 }
 
 /**
- * POST JSON with redirect following (Apps Script often redirects 302 to googleusercontent)
+ * POST JSON with redirect following.
+ * IMPORTANT: increased default timeout to 25s to avoid "Request timed out"
+ * when Apps Script is slow to respond.
  */
 function postJson(urlString, payload, timeoutMs = 25000, maxRedirects = 5) {
   return new Promise((resolve, reject) => {
@@ -69,7 +71,7 @@ function postJson(urlString, payload, timeoutMs = 25000, maxRedirects = 5) {
         const headers = res.headers || {};
         const location = headers.location;
 
-        // Follow redirects (including 302) by re-POSTing to the new location
+        // Follow redirects (Apps Script often redirects 302 to googleusercontent)
         if (
           location &&
           status >= 300 &&
@@ -84,7 +86,6 @@ function postJson(urlString, payload, timeoutMs = 25000, maxRedirects = 5) {
               timeoutMs,
               maxRedirects - 1
             );
-            // Preserve original redirect info for debugging
             nextResp.redirectedFrom = urlString;
             nextResp.redirectedTo = nextUrl;
             nextResp.redirectStatus = status;
@@ -100,12 +101,7 @@ function postJson(urlString, payload, timeoutMs = 25000, maxRedirects = 5) {
           parsed = JSON.parse(data);
         } catch (_) {}
 
-        resolve({
-          status,
-          headers,
-          raw: data,
-          json: parsed,
-        });
+        resolve({ status, headers, raw: data, json: parsed });
       });
     });
 
