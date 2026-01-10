@@ -3,7 +3,6 @@ require("dotenv").config();
 const express = require("express");
 const cors = require("cors");
 const crypto = require("crypto");
-const https = require("https");
 
 const app = express();
 app.use(cors());
@@ -25,14 +24,12 @@ const SQUARE_API_BASE =
     ? "https://connect.squareupsandbox.com"
     : "https://connect.squareup.com";
 
-// Log missing env vars (does not crash)
+// Basic sanity checks
 if (!SQUARE_ACCESS_TOKEN || !SQUARE_LOCATION_ID) {
   console.warn("WARNING: SQUARE_ACCESS_TOKEN or SQUARE_LOCATION_ID is not set.");
 }
 if (!CTE_SHEETS_WEBHOOK_URL || !CTE_SHEETS_WEBHOOK_SECRET) {
-  console.warn(
-    "WARNING: CTE_SHEETS_WEBHOOK_URL or CTE_SHEETS_WEBHOOK_SECRET is not set."
-  );
+  console.warn("WARNING: CTE_SHEETS_WEBHOOK_URL or CTE_SHEETS_WEBHOOK_SECRET is not set.");
 }
 
 // Convert dollars to integer cents
@@ -43,92 +40,45 @@ function toCents(total) {
 }
 
 /**
- * POST JSON with redirect following.
- * IMPORTANT: increased default timeout to 25s to avoid "Request timed out"
- * when Apps Script is slow to respond.
+ * Fetch with timeout (Node 22 has global fetch)
  */
-function postJson(urlString, payload, timeoutMs = 25000, maxRedirects = 5) {
-  return new Promise((resolve, reject) => {
-    const url = new URL(urlString);
-    const body = JSON.stringify(payload);
-
-    const options = {
-      method: "POST",
-      hostname: url.hostname,
-      path: url.pathname + (url.search || ""),
-      headers: {
-        "Content-Type": "application/json",
-        "Content-Length": Buffer.byteLength(body),
-      },
-      timeout: timeoutMs,
-    };
-
-    const req = https.request(options, (res) => {
-      let data = "";
-      res.on("data", (chunk) => (data += chunk));
-      res.on("end", async () => {
-        const status = res.statusCode || 0;
-        const headers = res.headers || {};
-        const location = headers.location;
-
-        // Follow redirects (Apps Script often redirects 302 to googleusercontent)
-        if (
-          location &&
-          status >= 300 &&
-          status < 400 &&
-          maxRedirects > 0
-        ) {
-          try {
-            const nextUrl = new URL(location, url).toString();
-            const nextResp = await postJson(
-              nextUrl,
-              payload,
-              timeoutMs,
-              maxRedirects - 1
-            );
-            nextResp.redirectedFrom = urlString;
-            nextResp.redirectedTo = nextUrl;
-            nextResp.redirectStatus = status;
-            return resolve(nextResp);
-          } catch (err) {
-            return reject(err);
-          }
-        }
-
-        // Try parse JSON; fall back to raw text
-        let parsed = null;
-        try {
-          parsed = JSON.parse(data);
-        } catch (_) {}
-
-        resolve({ status, headers, raw: data, json: parsed });
-      });
-    });
-
-    req.on("timeout", () => req.destroy(new Error("Request timed out")));
-    req.on("error", (err) => reject(err));
-
-    req.write(body);
-    req.end();
-  });
+async function fetchWithTimeout(url, options = {}, timeoutMs = 25000) {
+  const controller = new AbortController();
+  const id = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const resp = await fetch(url, { ...options, signal: controller.signal, redirect: "follow" });
+    const text = await resp.text();
+    let json = null;
+    try { json = JSON.parse(text); } catch (_) {}
+    return { status: resp.status, text, json };
+  } finally {
+    clearTimeout(id);
+  }
 }
 
 /**
- * Fire-and-forget Sheets write (never blocks checkout success)
+ * Sheets webhook call via GET with base64url payload.
+ * This avoids the POST->redirect->405 issue.
  */
 async function writeLeadToSheets_(lead) {
   if (!CTE_SHEETS_WEBHOOK_URL || !CTE_SHEETS_WEBHOOK_SECRET) {
     console.warn("Sheets webhook not configured; skipping write.");
-    return { skipped: true };
+    return { skipped: true, status: 0 };
   }
 
-  const payload = {
+  const payloadObj = {
     action: "upsertLead",
     secret: CTE_SHEETS_WEBHOOK_SECRET,
     ...lead,
   };
 
-  return await postJson(CTE_SHEETS_WEBHOOK_URL, payload);
+  // base64url encode JSON payload
+  const payload = Buffer.from(JSON.stringify(payloadObj), "utf8").toString("base64url");
+
+  const url = new URL(CTE_SHEETS_WEBHOOK_URL);
+  url.searchParams.set("payload", payload);
+
+  return await fetchWithTimeout(url.toString(), { method: "GET" }, 25000);
 }
 
 // Health
@@ -151,10 +101,7 @@ app.get("/env-check", (req, res) => {
       webhookUrlSet: Boolean(CTE_SHEETS_WEBHOOK_URL),
       webhookSecretSet: Boolean(CTE_SHEETS_WEBHOOK_SECRET),
       webhookUrlLooksLikeSheetsEditLink: u.includes("docs.google.com/spreadsheets"),
-      webhookUrlLooksLikeAppsScriptExec:
-        u.includes("script.google.com") && u.includes("/exec"),
-      webhookUrlLooksLikeGoogleUserContent:
-        u.includes("script.googleusercontent.com"),
+      webhookUrlLooksLikeAppsScriptExec: u.includes("script.google.com") && u.includes("/exec"),
     },
   });
 });
@@ -162,9 +109,7 @@ app.get("/env-check", (req, res) => {
 // Debug: attempts a write into your leads sheet via Apps Script webhook
 app.get("/test-sheets", async (req, res) => {
   try {
-    const bookingRef = `TEST-${Date.now()}-${crypto
-      .randomBytes(3)
-      .toString("hex")}`;
+    const bookingRef = `TEST-${Date.now()}-${crypto.randomBytes(3).toString("hex")}`;
 
     const lead = {
       bookingRef,
@@ -181,16 +126,12 @@ app.get("/test-sheets", async (req, res) => {
     const resp = await writeLeadToSheets_(lead);
 
     res.json({
-      ok: true,
+      ok: resp.skipped ? false : resp.status >= 200 && resp.status < 300,
       bookingRef,
       sheetsResponse: {
         status: resp.status,
-        redirectedFrom: resp.redirectedFrom,
-        redirectedTo: resp.redirectedTo,
-        redirectStatus: resp.redirectStatus,
-        locationHeader: resp.headers?.location,
         json: resp.json,
-        raw: resp.json ? undefined : resp.raw,
+        raw: resp.json ? undefined : resp.text?.slice(0, 500),
       },
     });
   } catch (err) {
@@ -219,10 +160,9 @@ app.post("/create-checkout", async (req, res) => {
       return res.status(400).json({ ok: false, error: "Invalid total." });
     }
 
-    const bookingRef = `CTE-${Date.now()}-${crypto
-      .randomBytes(3)
-      .toString("hex")}`;
+    const bookingRef = `CTE-${Date.now()}-${crypto.randomBytes(3).toString("hex")}`;
 
+    // Create Square payment link
     const payload = {
       idempotency_key: crypto.randomUUID(),
       quick_pay: {
@@ -233,18 +173,15 @@ app.post("/create-checkout", async (req, res) => {
       payment_note: `BookingRef ${bookingRef} | ${checkin} to ${checkout} | Guests ${guests} | Nights ${nights}`,
     };
 
-    const squareResp = await fetch(
-      `${SQUARE_API_BASE}/v2/online-checkout/payment-links`,
-      {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "Square-Version": SQUARE_VERSION,
-          Authorization: `Bearer ${SQUARE_ACCESS_TOKEN}`,
-        },
-        body: JSON.stringify(payload),
-      }
-    );
+    const squareResp = await fetch(`${SQUARE_API_BASE}/v2/online-checkout/payment-links`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Square-Version": SQUARE_VERSION,
+        Authorization: `Bearer ${SQUARE_ACCESS_TOKEN}`,
+      },
+      body: JSON.stringify(payload),
+    });
 
     const squareData = await squareResp.json();
     if (!squareResp.ok) {
@@ -258,12 +195,10 @@ app.post("/create-checkout", async (req, res) => {
 
     const squareCheckoutUrl = squareData?.payment_link?.url;
     if (!squareCheckoutUrl) {
-      return res
-        .status(502)
-        .json({ ok: false, error: "Square returned no payment_link.url" });
+      return res.status(502).json({ ok: false, error: "Square returned no payment_link.url" });
     }
 
-    // Fire-and-forget Sheets write
+    // Fire-and-forget Sheets write (do not block checkout)
     writeLeadToSheets_({
       bookingRef,
       checkin,
@@ -280,12 +215,8 @@ app.post("/create-checkout", async (req, res) => {
       source: "website-widget",
       createdAt: new Date().toISOString(),
     })
-      .then((resp) =>
-        console.log("Sheets write status:", resp.status, resp.json || resp.raw)
-      )
-      .catch((err) =>
-        console.error("Sheets write failed:", err?.message || err)
-      );
+      .then((resp) => console.log("Sheets write:", resp.status, resp.json || resp.text?.slice(0, 200)))
+      .catch((err) => console.error("Sheets write failed:", err?.message || err));
 
     res.json({ ok: true, bookingRef, squareCheckoutUrl });
   } catch (err) {
@@ -295,6 +226,4 @@ app.post("/create-checkout", async (req, res) => {
 });
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () =>
-  console.log(`Coastal Tide backend listening on port ${PORT}`)
-);
+app.listen(PORT, () => console.log(`Coastal Tide backend listening on port ${PORT}`));
