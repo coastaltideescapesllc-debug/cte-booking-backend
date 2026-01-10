@@ -35,20 +35,20 @@ function normalizePhoneE164(input) {
   const s = String(input || "").trim();
   const digits = s.replace(/[^\d]/g, "");
 
-  // US 10-digit -> +1XXXXXXXXXX
-  if (digits.length === 10) return "+1" + digits;
-
-  // US 11-digit starting with 1 -> +1XXXXXXXXXX
-  if (digits.length === 11 && digits[0] === "1") return "+" + digits;
-
-  // Already includes country code (best effort)
-  if (s.startsWith("+") && digits.length >= 10) return "+" + digits;
-
-  return s; // fallback
+  if (digits.length === 10) return "+1" + digits; // US 10-digit
+  if (digits.length === 11 && digits[0] === "1") return "+" + digits; // US 11-digit starting with 1
+  if (s.startsWith("+") && digits.length >= 10) return "+" + digits; // already has country code
+  return s; // best effort
 }
 
-// Robust POST that preserves method across Google redirect (302 -> script.googleusercontent.com)
-async function postJsonFollowRedirectPreserveMethod(url, body, timeoutMs = 10000) {
+function squareBaseUrl() {
+  return SQUARE_ENV === "sandbox"
+    ? "https://connect.squareupsandbox.com"
+    : "https://connect.squareup.com";
+}
+
+// Preserve POST across Google Apps Script redirect (302 to script.googleusercontent.com)
+async function postJsonFollowRedirectPreserveMethod(url, body, timeoutMs = 12000) {
   const controller = new AbortController();
   const t = setTimeout(() => controller.abort(), timeoutMs);
 
@@ -61,8 +61,7 @@ async function postJsonFollowRedirectPreserveMethod(url, body, timeoutMs = 10000
       signal: controller.signal,
     });
 
-    // Google Apps Script often returns 302 to script.googleusercontent.com
-    if (res.status === 301 || res.status === 302 || res.status === 303 || res.status === 307 || res.status === 308) {
+    if ([301, 302, 303, 307, 308].includes(res.status)) {
       const loc = res.headers.get("location");
       if (loc) {
         const res2 = await fetch(loc, {
@@ -86,12 +85,6 @@ async function postJsonFollowRedirectPreserveMethod(url, body, timeoutMs = 10000
   }
 }
 
-function squareBaseUrl() {
-  return SQUARE_ENV === "sandbox"
-    ? "https://connect.squareupsandbox.com"
-    : "https://connect.squareup.com";
-}
-
 // --------------------
 // ROUTES
 // --------------------
@@ -111,12 +104,69 @@ app.get("/env-check", (_req, res) => {
     sheets: {
       webhookUrlSet: !!CTE_SHEETS_WEBHOOK_URL,
       webhookSecretSet: !!CTE_SHEETS_WEBHOOK_SECRET,
-      webhookUrlLooksLikeAppsScriptExec: typeof CTE_SHEETS_WEBHOOK_URL === "string" && CTE_SHEETS_WEBHOOK_URL.includes("script.google.com/macros/s/") && CTE_SHEETS_WEBHOOK_URL.endsWith("/exec"),
+      webhookUrlLooksLikeAppsScriptExec:
+        typeof CTE_SHEETS_WEBHOOK_URL === "string" &&
+        CTE_SHEETS_WEBHOOK_URL.includes("script.google.com/macros/s/") &&
+        CTE_SHEETS_WEBHOOK_URL.endsWith("/exec"),
     },
   });
 });
 
-// Quick diagnostic write to Sheets
+// NEW: test Square payment link creation (no widget needed)
+app.get("/test-square", async (_req, res) => {
+  try {
+    if (!SQUARE_ACCESS_TOKEN || !SQUARE_LOCATION_ID) {
+      return res.status(500).json({ ok: false, error: "Missing SQUARE_ACCESS_TOKEN or SQUARE_LOCATION_ID" });
+    }
+
+    const squareUrl = `${squareBaseUrl()}/v2/online-checkout/payment-links`;
+
+    const body = {
+      idempotency_key: crypto.randomUUID(),
+      quick_pay: {
+        name: "CTE Test Payment Link ($1)",
+        price_money: { amount: 100, currency: "USD" },
+        location_id: SQUARE_LOCATION_ID,
+      },
+      pre_populated_data: {
+        buyer_email: "test@example.com",
+        buyer_phone_number: "+14155551212",
+      },
+    };
+
+    const sqRes = await fetch(squareUrl, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${SQUARE_ACCESS_TOKEN}`,
+        "Content-Type": "application/json",
+        "Square-Version": SQUARE_VERSION,
+      },
+      body: JSON.stringify(body),
+    });
+
+    const text = await sqRes.text();
+    let json = null;
+    try { json = JSON.parse(text); } catch (_) {}
+
+    if (!sqRes.ok) {
+      return res.status(502).json({
+        ok: false,
+        error: "Square CreatePaymentLink failed",
+        status: sqRes.status,
+        details: json || text,
+      });
+    }
+
+    return res.json({
+      ok: true,
+      url: json?.payment_link?.url || null,
+      payment_link: json?.payment_link || null,
+    });
+  } catch (err) {
+    return res.status(500).json({ ok: false, error: err?.message || String(err) });
+  }
+});
+
 app.get("/test-sheets", async (_req, res) => {
   try {
     if (!CTE_SHEETS_WEBHOOK_URL || !CTE_SHEETS_WEBHOOK_SECRET) {
@@ -148,7 +198,6 @@ app.get("/test-sheets", async (_req, res) => {
   }
 });
 
-// Create Square payment link + write lead to Sheets
 app.post("/create-checkout", async (req, res) => {
   try {
     if (!SQUARE_ACCESS_TOKEN || !SQUARE_LOCATION_ID) {
@@ -162,7 +211,6 @@ app.post("/create-checkout", async (req, res) => {
       guestName,
       guestEmail,
       guestPhone,
-
       total,
       checkin,
       checkout,
@@ -176,43 +224,22 @@ app.post("/create-checkout", async (req, res) => {
     } = req.body || {};
 
     const cents = toCents(total);
-    if (!cents || cents < 1) {
-      return res.status(400).json({ ok: false, error: "Invalid total" });
-    }
-    if (!checkin || !checkout || !guests || !nights) {
-      return res.status(400).json({ ok: false, error: "Missing stay details" });
-    }
-    if (!guestName || !guestEmail || !guestPhone) {
-      return res.status(400).json({ ok: false, error: "Missing guestName/guestEmail/guestPhone" });
-    }
+    if (!cents || cents < 1) return res.status(400).json({ ok: false, error: "Invalid total" });
+    if (!checkin || !checkout || !guests || !nights) return res.status(400).json({ ok: false, error: "Missing stay details" });
+    if (!guestName || !guestEmail || !guestPhone) return res.status(400).json({ ok: false, error: "Missing guestName/guestEmail/guestPhone" });
 
     const bookingRef = makeBookingRef();
     const phoneE164 = normalizePhoneE164(guestPhone);
 
-    // --------------------
-    // SQUARE: CreatePaymentLink
-    // --------------------
     const squareUrl = `${squareBaseUrl()}/v2/online-checkout/payment-links`;
 
     const squareBody = {
       idempotency_key: crypto.randomUUID(),
-
-      // Quick Pay is sufficient for your current flow
       quick_pay: {
         name: `Coastal Tide Escapes – Booking (${bookingRef})`,
         price_money: { amount: cents, currency: "USD" },
         location_id: SQUARE_LOCATION_ID,
       },
-
-      // Ask Square to show your extra fields (buyer will type name here if desired)
-      checkout_options: {
-        // Up to 2 custom fields supported
-        custom_fields: [
-          { title: "Guest full name (required)" }
-        ],
-      },
-
-      // PRE-FILL: Email + phone on Square checkout page
       pre_populated_data: {
         buyer_email: String(guestEmail).trim(),
         buyer_phone_number: String(phoneE164).trim(),
@@ -247,43 +274,36 @@ app.post("/create-checkout", async (req, res) => {
       return res.status(502).json({ ok: false, error: "Square response missing payment_link.url", details: sqJson });
     }
 
-    // --------------------
-    // SHEETS: Write lead (upsert)
-    // --------------------
     const leadPayload = {
       action: "upsertLead",
       secret: CTE_SHEETS_WEBHOOK_SECRET,
-
       bookingRef,
       createdAt: new Date().toISOString(),
       source: "website-widget",
-
       guestName: String(guestName).trim(),
       guestEmail: String(guestEmail).trim(),
       guestPhone: String(phoneE164).trim(),
-
       checkin,
       checkout,
       guests,
       nights,
       total: Number(total),
-
       discountApplied: !!discountApplied,
       discountAmount: Number(discountAmount || 0),
       preTaxTotal: Number(preTaxTotal || 0),
       taxAmount: Number(taxAmount || 0),
       rateMode: String(rateMode || ""),
-
       squareCheckoutUrl,
     };
 
-    // Don’t block the user if Sheets is briefly slow—try, log, continue
     const sheetsResponse = await postJsonFollowRedirectPreserveMethod(CTE_SHEETS_WEBHOOK_URL, leadPayload, 12000);
 
+    // IMPORTANT: return both keys to match any widget version
     return res.json({
       ok: true,
       bookingRef,
       url: squareCheckoutUrl,
+      squareCheckoutUrl,
       sheets: { status: sheetsResponse.status, ok: !!(sheetsResponse.json && sheetsResponse.json.ok) },
     });
   } catch (err) {
@@ -294,4 +314,3 @@ app.post("/create-checkout", async (req, res) => {
 app.listen(PORT, () => {
   console.log(`Coastal Tide backend listening on port ${PORT}`);
 });
-
