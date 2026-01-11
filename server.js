@@ -14,13 +14,11 @@ const SQUARE_LOCATION_ID = process.env.SQUARE_LOCATION_ID;
 const SQUARE_ENV = (process.env.SQUARE_ENV || "production").toLowerCase(); // production | sandbox
 const SQUARE_VERSION = process.env.SQUARE_VERSION || "2025-10-16";
 
+// --- Sheets webhook from .env ---
 const CTE_SHEETS_WEBHOOK_URL = process.env.CTE_SHEETS_WEBHOOK_URL;
 const CTE_SHEETS_WEBHOOK_SECRET = process.env.CTE_SHEETS_WEBHOOK_SECRET;
 
-// Basic sanity check so we fail loudly if env vars are missing
-if (!SQUARE_ACCESS_TOKEN || !SQUARE_LOCATION_ID) {
-  console.warn("WARNING: SQUARE_ACCESS_TOKEN or SQUARE_LOCATION_ID is not set in .env");
-}
+const PORT = process.env.PORT || 3000;
 
 // Convert dollars to integer cents
 function toCents(total) {
@@ -33,9 +31,14 @@ function makeBookingRef() {
   return "CTE-" + Date.now() + "-" + crypto.randomBytes(3).toString("hex");
 }
 
+function squareBaseUrl() {
+  return SQUARE_ENV === "sandbox"
+    ? "https://connect.squareupsandbox.com"
+    : "https://connect.squareup.com";
+}
+
 /**
- * Apps Script /exec sometimes redirects; we want to preserve POST behavior.
- * (This helper is already in your working handoff.)
+ * Apps Script /exec may redirect; preserve POST behavior.
  */
 async function postJsonFollowRedirectPreserveMethod(url, body, timeoutMs = 12000) {
   const controller = new AbortController();
@@ -60,24 +63,22 @@ async function postJsonFollowRedirectPreserveMethod(url, body, timeoutMs = 12000
         });
         const text2 = await res2.text();
         let json2 = null;
-        try { json2 = JSON.parse(text2); } catch (_) {}
-        return { status: res2.status, redirectedFrom: url, redirectedTo: loc, json: json2, raw: text2 };
+        try {
+          json2 = JSON.parse(text2);
+        } catch (_) {}
+        return { status: res2.status, redirectedTo: loc, json: json2, raw: text2 };
       }
     }
 
     const text = await res.text();
     let json = null;
-    try { json = JSON.parse(text); } catch (_) {}
+    try {
+      json = JSON.parse(text);
+    } catch (_) {}
     return { status: res.status, json, raw: text };
   } finally {
     clearTimeout(t);
   }
-}
-
-function squareBaseUrl() {
-  return SQUARE_ENV === "sandbox"
-    ? "https://connect.squareupsandbox.com"
-    : "https://connect.squareup.com";
 }
 
 app.get("/", (_req, res) => {
@@ -96,21 +97,13 @@ app.get("/env-check", (_req, res) => {
     sheets: {
       webhookUrlSet: !!CTE_SHEETS_WEBHOOK_URL,
       webhookSecretSet: !!CTE_SHEETS_WEBHOOK_SECRET,
-      webhookUrlLooksLikeSheetsEditLink:
-        typeof CTE_SHEETS_WEBHOOK_URL === "string" && CTE_SHEETS_WEBHOOK_URL.includes("/spreadsheets/"),
-      webhookUrlLooksLikeAppsScriptExec:
-        typeof CTE_SHEETS_WEBHOOK_URL === "string" &&
-        CTE_SHEETS_WEBHOOK_URL.includes("script.google.com/macros/s/") &&
-        CTE_SHEETS_WEBHOOK_URL.endsWith("/exec"),
-      webhookUrlLooksLikeGoogleUserContent:
-        typeof CTE_SHEETS_WEBHOOK_URL === "string" && CTE_SHEETS_WEBHOOK_URL.includes("script.googleusercontent.com"),
     },
   });
 });
 
 /**
- * NEW: Track "See Price" clicks (and any other funnel event later).
- * Front-end calls this when the user clicks See Price.
+ * NEW: Track "See Price" click (QUOTE_VIEWED).
+ * Front-end calls this when user clicks See Price (after you calculate/show quote).
  */
 app.post("/track-event", async (req, res) => {
   try {
@@ -119,8 +112,8 @@ app.post("/track-event", async (req, res) => {
     }
 
     const {
-      eventType,    // "QUOTE_VIEWED"
-      sessionId,    // stable ID from browser localStorage
+      eventType, // "QUOTE_VIEWED"
+      sessionId, // stable id from browser localStorage
       checkin,
       checkout,
       guests,
@@ -148,7 +141,6 @@ app.post("/track-event", async (req, res) => {
       return res.status(400).json({ ok: false, error: "Missing stay details" });
     }
 
-    // We still generate a bookingRef for logging, but you’ll primarily correlate by sessionId + dates.
     const bookingRef = makeBookingRef();
 
     const payload = {
@@ -157,6 +149,7 @@ app.post("/track-event", async (req, res) => {
       bookingRef,
       createdAt: new Date().toISOString(),
       source: "website-widget",
+
       eventType: String(eventType),
       sessionId: String(sessionId),
 
@@ -176,55 +169,14 @@ app.post("/track-event", async (req, res) => {
       preTaxTotal: preTaxTotal !== undefined ? Number(preTaxTotal || 0) : "",
       taxAmount: taxAmount !== undefined ? Number(taxAmount || 0) : "",
       rateMode: rateMode ? String(rateMode) : "",
-      squareCheckoutUrl: "", // not applicable for quote view
+
+      squareCheckoutUrl: "",
     };
 
     const sheetsResponse = await postJsonFollowRedirectPreserveMethod(CTE_SHEETS_WEBHOOK_URL, payload, 12000);
-
     return res.json({ ok: true, bookingRef, sheetsResponse });
   } catch (err) {
     return res.status(500).json({ ok: false, error: err?.message || String(err) });
-  }
-});
-
-app.get("/test-sheets", async (_req, res) => {
-  try {
-    if (!CTE_SHEETS_WEBHOOK_URL || !CTE_SHEETS_WEBHOOK_SECRET) {
-      return res.status(500).json({ ok: false, error: "Sheets webhook env vars missing on server" });
-    }
-
-    const bookingRef = "TEST-" + Date.now() + "-" + crypto.randomBytes(3).toString("hex");
-
-    const payload = {
-      action: "appendLead",
-      secret: CTE_SHEETS_WEBHOOK_SECRET,
-      bookingRef,
-      checkin: "2026-01-20",
-      checkout: "2026-01-23",
-      guests: 4,
-      nights: 3,
-      total: 999.99,
-      discountApplied: false,
-      discountAmount: 0,
-      preTaxTotal: 934.57,
-      taxAmount: 65.42,
-      rateMode: "render-test-sheets",
-      squareCheckoutUrl: "https://example.com/test-checkout-link",
-      source: "render-test-sheets",
-      createdAt: new Date().toISOString(),
-      eventType: "TEST",
-      sessionId: "TEST-SESSION",
-    };
-
-    const sheetsResponse = await postJsonFollowRedirectPreserveMethod(
-      CTE_SHEETS_WEBHOOK_URL,
-      payload,
-      12000
-    );
-
-    res.json({ ok: true, bookingRef, sheetsResponse });
-  } catch (err) {
-    res.status(500).json({ ok: false, error: err?.message || String(err) });
   }
 });
 
@@ -254,14 +206,15 @@ app.post("/create-checkout", async (req, res) => {
       guestEmail,
       guestPhone,
 
-      // NEW: pass through from front-end
+      // NEW: correlation id from front-end
       sessionId,
     } = req.body || {};
 
     const cents = toCents(total);
     if (!cents || cents < 1) return res.status(400).json({ ok: false, error: "Invalid total" });
-    if (!checkin || !checkout || !guests || !nights)
+    if (!checkin || !checkout || !guests || !nights) {
       return res.status(400).json({ ok: false, error: "Missing stay details" });
+    }
 
     const bookingRef = makeBookingRef();
 
@@ -292,7 +245,9 @@ app.post("/create-checkout", async (req, res) => {
 
     const sqText = await sqRes.text();
     let sqJson = null;
-    try { sqJson = JSON.parse(sqText); } catch (_) {}
+    try {
+      sqJson = JSON.parse(sqText);
+    } catch (_) {}
 
     if (!sqRes.ok) {
       return res.status(502).json({
@@ -305,11 +260,10 @@ app.post("/create-checkout", async (req, res) => {
 
     const squareCheckoutUrl = sqJson?.payment_link?.url;
     if (!squareCheckoutUrl) {
-      return res
-        .status(502)
-        .json({ ok: false, error: "Square response missing payment_link.url", details: sqJson });
+      return res.status(502).json({ ok: false, error: "Square response missing payment_link.url", details: sqJson });
     }
 
+    // Log the "Continue" click (CHECKOUT_CLICKED) to Sheets
     const leadPayload = {
       action: "appendLead",
       secret: CTE_SHEETS_WEBHOOK_SECRET,
@@ -317,13 +271,13 @@ app.post("/create-checkout", async (req, res) => {
       createdAt: new Date().toISOString(),
       source: "website-widget",
 
-      // NEW fields
       eventType: "CHECKOUT_CLICKED",
       sessionId: sessionId ? String(sessionId) : "",
 
       guestName: guestName ? String(guestName).trim() : "",
       guestEmail: guestEmail ? String(guestEmail).trim() : "",
       guestPhone: guestPhone ? String(guestPhone).trim() : "",
+
       checkin,
       checkout,
       guests,
@@ -352,7 +306,6 @@ app.post("/create-checkout", async (req, res) => {
   }
 });
 
-const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`Coastal Tide backend listening on port ${PORT}`);
 });
