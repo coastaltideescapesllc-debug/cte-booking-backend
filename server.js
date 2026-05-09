@@ -4,8 +4,8 @@ const cors = require("cors");
 const crypto = require("crypto");
 const nodemailer = require("nodemailer");
 
-// Square SDK v43 uses SquareClient + SquareEnvironment
-const { SquareClient, SquareEnvironment } = require("square");
+// Square v39 API style — matches the pinned version in package.json
+const { Client, Environment, ApiError } = require("square");
 
 const app = express();
 app.use(cors());
@@ -14,14 +14,12 @@ app.use(express.json());
 const isProduction =
   String(process.env.SQUARE_ENVIRONMENT || "production").toLowerCase() !== "sandbox";
 
-const client = new SquareClient({
-  token: process.env.SQUARE_ACCESS_TOKEN,
-  environment: isProduction ? SquareEnvironment.Production : SquareEnvironment.Sandbox,
+const client = new Client({
+  accessToken: process.env.SQUARE_ACCESS_TOKEN,
+  environment: isProduction ? Environment.Production : Environment.Sandbox,
 });
 
-// v43 still exposes checkoutApi as a property (not client.checkout)
 const checkoutApi = client.checkoutApi;
-
 const LOCATION_ID = process.env.SQUARE_LOCATION_ID;
 const PORT = process.env.PORT || 3000;
 
@@ -256,6 +254,7 @@ function buildCheckoutBody(payload) {
 
   return {
     idempotencyKey: crypto.randomUUID(),
+    // No quickPay — order-only so Square shows full itemized breakdown
     order: {
       locationId: LOCATION_ID,
       lineItems,
@@ -318,8 +317,7 @@ app.post("/create-checkout", async (req, res) => {
     const body     = buildCheckoutBody(payload);
     const response = await checkoutApi.createPaymentLink(body);
 
-    // v43 wraps result differently — try both response shapes
-    const paymentLink = response.result?.paymentLink ?? response.paymentLink;
+    const paymentLink = response.result?.paymentLink;
 
     if (!paymentLink?.url) {
       return res.status(500).json({ error: "Square did not return a checkout URL" });
@@ -337,12 +335,18 @@ app.post("/create-checkout", async (req, res) => {
     });
   } catch (err) {
     console.error("Square checkout error:", err);
-    const message =
-      err?.errors?.map((e) => `${e.category}: ${e.detail}`).join(" | ") ||
-      err?.result?.errors?.map((e) => `${e.category}: ${e.detail}`).join(" | ") ||
-      err?.message ||
-      "Unknown server error";
-    return res.status(500).json({ error: message });
+
+    if (err instanceof ApiError) {
+      const details =
+        err.result?.errors?.map((e) => `${e.category}: ${e.detail}`).join(" | ") ||
+        err.message ||
+        "Square API error";
+      return res.status(500).json({ error: details });
+    }
+
+    return res.status(500).json({
+      error: err?.message || "Unknown server error",
+    });
   }
 });
 
