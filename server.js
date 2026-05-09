@@ -21,7 +21,7 @@ const checkoutApi = client.checkoutApi;
 const LOCATION_ID = process.env.SQUARE_LOCATION_ID;
 const PORT = process.env.PORT || 3000;
 
-// ─── Utility helpers ─────────────────────────────────────────────────────────
+// ─── Utility helpers ──────────────────────────────────────────────────────────
 
 function toCents(value) {
   const num = Number(value);
@@ -105,7 +105,6 @@ async function sendBookingNotification(payload, checkoutUrl) {
     });
     console.log("Booking notification email sent to", process.env.NOTIFY_EMAIL_TO);
   } catch (err) {
-    // Non-fatal — log but don't block the checkout response
     console.error("Booking notification email failed:", err.message);
   }
 }
@@ -115,21 +114,21 @@ async function sendBookingNotification(payload, checkoutUrl) {
 function buildLineItems(payload) {
   const lineItems = [];
 
-  const lodgingCents     = positiveCents(payload.lodging);
-  const cleaningCents    = positiveCents(payload.cleaning);
-  const discountCents    = positiveCents(payload.discountAmount);
+  const lodgingCents      = positiveCents(payload.lodging);
+  const cleaningCents     = positiveCents(payload.cleaning);
+  const discountCents     = positiveCents(payload.discountAmount);
   const golfCartBaseCents = positiveCents(payload.golfCartBase);
   const golfCartTaxCents  = positiveCents(payload.golfCartTax);
 
   // Lodging — include stay dates and night count on the receipt line
   if (lodgingCents > 0) {
-    const checkin  = safeString(payload.checkin);
-    const checkout = safeString(payload.checkout);
-    const nights   = safeString(payload.nights);
+    const checkin     = safeString(payload.checkin);
+    const checkout    = safeString(payload.checkout);
+    const nights      = safeString(payload.nights);
     const nightsLabel = nights
       ? ` • ${nights} night${Number(nights) !== 1 ? "s" : ""}`
       : "";
-    const datesLabel = checkin && checkout
+    const datesLabel  = checkin && checkout
       ? ` (${checkin} → ${checkout}${nightsLabel})`
       : "";
     lineItems.push({
@@ -175,44 +174,51 @@ function buildLineItems(payload) {
 }
 
 function buildFallbackLineItems(payload) {
-  const totalCents = positiveCents(payload.total);
+  const checkin     = safeString(payload.checkin);
+  const checkout    = safeString(payload.checkout);
+  const nights      = safeString(payload.nights);
+  const nightsLabel = nights ? ` • ${nights} nights` : "";
+  const datesLabel  = checkin && checkout
+    ? ` (${checkin} → ${checkout}${nightsLabel})`
+    : "";
+  const totalCents  = positiveCents(payload.total);
   return [
     {
-      name: "Coastal Tide Escapes Reservation",
+      name: `Coastal Tide Escapes Reservation${datesLabel}`,
       quantity: "1",
       basePriceMoney: money(totalCents),
     },
   ];
 }
 
-// ─── Order note (shows in Square Dashboard transaction detail) ────────────────
+// ─── Order note (visible in Square Dashboard transaction detail) ──────────────
 
 function buildOrderNote(payload) {
   const parts = [];
 
-  const bookingRef  = safeString(payload.bookingRef);
-  const guestName   = safeString(payload.guestName);
-  const guestEmail  = safeString(payload.guestEmail);
-  const guestPhone  = safeString(payload.guestPhone);
-  const checkin     = safeString(payload.checkin);
-  const checkout    = safeString(payload.checkout);
-  const guests      = safeString(payload.guests);
-  const nights      = safeString(payload.nights);
-  const rateMode    = safeString(payload.rateMode);
+  const bookingRef = safeString(payload.bookingRef);
+  const guestName  = safeString(payload.guestName);
+  const guestEmail = safeString(payload.guestEmail);
+  const guestPhone = safeString(payload.guestPhone);
+  const checkin    = safeString(payload.checkin);
+  const checkout   = safeString(payload.checkout);
+  const guests     = safeString(payload.guests);
+  const nights     = safeString(payload.nights);
+  const rateMode   = safeString(payload.rateMode);
 
-  if (bookingRef)           parts.push(`Booking Ref: ${bookingRef}`);
-  if (guestName)            parts.push(`Guest: ${guestName}`);
-  if (guestEmail)           parts.push(`Email: ${guestEmail}`);
-  if (guestPhone)           parts.push(`Phone: ${guestPhone}`);
-  if (checkin && checkout)  parts.push(`Stay: ${checkin} to ${checkout}`);
-  if (guests)               parts.push(`Guests: ${guests}`);
-  if (nights)               parts.push(`Nights: ${nights}`);
-  if (rateMode)             parts.push(`Rate Mode: ${rateMode}`);
+  if (bookingRef)          parts.push(`Booking Ref: ${bookingRef}`);
+  if (guestName)           parts.push(`Guest: ${guestName}`);
+  if (guestEmail)          parts.push(`Email: ${guestEmail}`);
+  if (guestPhone)          parts.push(`Phone: ${guestPhone}`);
+  if (checkin && checkout) parts.push(`Stay: ${checkin} to ${checkout}`);
+  if (guests)              parts.push(`Guests: ${guests}`);
+  if (nights)              parts.push(`Nights: ${nights}`);
+  if (rateMode)            parts.push(`Rate Mode: ${rateMode}`);
 
   return parts.join(" | ");
 }
 
-// ─── Square checkout body builder ────────────────────────────────────────────
+// ─── Square checkout body builder ─────────────────────────────────────────────
 
 function buildCheckoutBody(payload) {
   const bookingRef = safeString(payload.bookingRef) || `CTE-${Date.now()}`;
@@ -231,11 +237,16 @@ function buildCheckoutBody(payload) {
     return sum + Number(item.basePriceMoney.amount);
   }, 0);
 
-  // If line items don't add up to the expected total, fall back to a single line
+  // If line items don't add up to the requested total, use a single fallback line
   if (requestedTotalCents > 0 && lineItemsTotalCents !== requestedTotalCents) {
     lineItems = buildFallbackLineItems(payload);
   }
 
+  // ── IMPORTANT: No quickPay block here ──────────────────────────────────────
+  // Using order-only mode so Square displays the full itemized breakdown
+  // on the checkout page (dates, line items, guest name in note, etc.)
+  // quickPay overrides line items and shows only a single price — removed.
+  // ──────────────────────────────────────────────────────────────────────────
   const order = {
     locationId: LOCATION_ID,
     lineItems,
@@ -243,26 +254,20 @@ function buildCheckoutBody(payload) {
       autoApplyTaxes: false,
       autoApplyDiscounts: false,
     },
+    referenceId: bookingRef,
+    metadata: {
+      bookingRef,
+      guestName,
+      checkin,
+      checkout,
+      guests: safeString(payload.guests),
+      nights: safeString(payload.nights),
+    },
   };
-
-  const descriptionParts = [];
-  if (guestName)            descriptionParts.push(guestName);
-  if (checkin && checkout)  descriptionParts.push(`${checkin} to ${checkout}`);
-  descriptionParts.push(bookingRef);
 
   return {
     idempotencyKey: crypto.randomUUID(),
-    quickPay: {
-      name: "Coastal Tide Escapes Reservation",
-      priceMoney: money(
-        requestedTotalCents > 0
-          ? requestedTotalCents
-          : lineItems.reduce((sum, item) => sum + Number(item.basePriceMoney.amount), 0)
-      ),
-      locationId: LOCATION_ID,
-    },
     order,
-    description: descriptionParts.join(" • "),
     checkoutOptions: {
       askForShippingAddress: false,
       merchantSupportEmail:
@@ -296,7 +301,7 @@ app.post("/create-checkout", async (req, res) => {
       return res.status(500).json({ error: "Missing SQUARE_LOCATION_ID" });
     }
 
-    const payload = req.body || {};
+    const payload    = req.body || {};
     const totalCents = positiveCents(payload.total);
     const checkin    = safeString(payload.checkin);
     const checkout   = safeString(payload.checkout);
@@ -309,8 +314,8 @@ app.post("/create-checkout", async (req, res) => {
       return res.status(400).json({ error: "Missing checkin or checkout" });
     }
 
-    const body = buildCheckoutBody(payload);
-    const response = await checkoutApi.createPaymentLink(body);
+    const body        = buildCheckoutBody(payload);
+    const response    = await checkoutApi.createPaymentLink(body);
     const paymentLink = response.result?.paymentLink;
 
     if (!paymentLink?.url) {
