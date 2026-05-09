@@ -3,21 +3,22 @@ const express = require("express");
 const cors = require("cors");
 const crypto = require("crypto");
 const nodemailer = require("nodemailer");
-const { Client, Environment, ApiError } = require("square");
+
+// ── Square SDK v43 uses SquareClient + SquareEnvironment (not Client/Environment)
+const { SquareClient, SquareEnvironment } = require("square");
 
 const app = express();
 app.use(cors());
 app.use(express.json());
 
-const client = new Client({
-  environment:
-    String(process.env.SQUARE_ENVIRONMENT || "production").toLowerCase() === "sandbox"
-      ? Environment.Sandbox
-      : Environment.Production,
-  accessToken: process.env.SQUARE_ACCESS_TOKEN,
+const isProduction =
+  String(process.env.SQUARE_ENVIRONMENT || "production").toLowerCase() !== "sandbox";
+
+const client = new SquareClient({
+  token: process.env.SQUARE_ACCESS_TOKEN,
+  environment: isProduction ? SquareEnvironment.Production : SquareEnvironment.Sandbox,
 });
 
-const checkoutApi = client.checkoutApi;
 const LOCATION_ID = process.env.SQUARE_LOCATION_ID;
 const PORT = process.env.PORT || 3000;
 
@@ -79,9 +80,9 @@ async function sendBookingNotification(payload, checkoutUrl) {
       <tr><td style="padding:8px 12px 4px 0;color:#555;border-top:1px solid #eee;">Lodging</td><td style="border-top:1px solid #eee;">$${p.lodging || "0.00"}</td></tr>
       <tr><td style="padding:4px 12px 4px 0;color:#555;">Cleaning Fee</td><td>$${p.cleaning || "0.00"}</td></tr>
       ${p.discountApplied ? `<tr><td style="padding:4px 12px 4px 0;color:#555;">Discount</td><td style="color:#c0392b;">-$${p.discountAmount || "0.00"}</td></tr>` : ""}
-      <tr><td style="padding:4px 12px 4px 0;color:#555;">Lodging Tax</td><td>$${p.lodgingTaxAmount || "0.00"}</td></tr>
+      <tr><td style="padding:4px 12px 4px 0;color:#555;">Lodging Tax (7%)</td><td>$${p.lodgingTaxAmount || "0.00"}</td></tr>
       ${p.golfCartSelected ? `<tr><td style="padding:4px 12px 4px 0;color:#555;">Golf Cart (6-Seater)</td><td>$${p.golfCartBase || "0.00"}</td></tr>` : ""}
-      ${p.golfCartSelected ? `<tr><td style="padding:4px 12px 4px 0;color:#555;">Golf Cart Tax</td><td>$${p.golfCartTax || "0.00"}</td></tr>` : ""}
+      ${p.golfCartSelected ? `<tr><td style="padding:4px 12px 4px 0;color:#555;">Golf Cart Tax (7%)</td><td>$${p.golfCartTax || "0.00"}</td></tr>` : ""}
       <tr>
         <td style="padding:10px 12px 4px 0;color:#0b5ea8;font-weight:bold;font-size:16px;border-top:2px solid #0b5ea8;">Total Charged</td>
         <td style="padding:10px 0 4px 0;font-weight:bold;font-size:16px;color:#0b5ea8;border-top:2px solid #0b5ea8;">$${p.total || "0.00"}</td>
@@ -117,10 +118,10 @@ function buildLineItems(payload) {
   const lodgingCents      = positiveCents(payload.lodging);
   const cleaningCents     = positiveCents(payload.cleaning);
   const discountCents     = positiveCents(payload.discountAmount);
+  const lodgingTaxCents   = positiveCents(payload.lodgingTaxAmount);
   const golfCartBaseCents = positiveCents(payload.golfCartBase);
   const golfCartTaxCents  = positiveCents(payload.golfCartTax);
 
-  // Lodging — include stay dates and night count on the receipt line
   if (lodgingCents > 0) {
     const checkin     = safeString(payload.checkin);
     const checkout    = safeString(payload.checkout);
@@ -154,6 +155,14 @@ function buildLineItems(payload) {
     });
   }
 
+  if (lodgingTaxCents > 0) {
+    lineItems.push({
+      name: "Lodging Tax (7%)",
+      quantity: "1",
+      basePriceMoney: money(lodgingTaxCents),
+    });
+  }
+
   if (golfCartBaseCents > 0) {
     lineItems.push({
       name: "6-Seater Golf Cart Add-On",
@@ -164,7 +173,7 @@ function buildLineItems(payload) {
 
   if (golfCartTaxCents > 0) {
     lineItems.push({
-      name: "Golf Cart Tax",
+      name: "Golf Cart Tax (7%)",
       quantity: "1",
       basePriceMoney: money(golfCartTaxCents),
     });
@@ -181,21 +190,19 @@ function buildFallbackLineItems(payload) {
   const datesLabel  = checkin && checkout
     ? ` (${checkin} → ${checkout}${nightsLabel})`
     : "";
-  const totalCents  = positiveCents(payload.total);
   return [
     {
       name: `Coastal Tide Escapes Reservation${datesLabel}`,
       quantity: "1",
-      basePriceMoney: money(totalCents),
+      basePriceMoney: money(positiveCents(payload.total)),
     },
   ];
 }
 
-// ─── Order note (visible in Square Dashboard transaction detail) ──────────────
+// ─── Order note ───────────────────────────────────────────────────────────────
 
 function buildOrderNote(payload) {
   const parts = [];
-
   const bookingRef = safeString(payload.bookingRef);
   const guestName  = safeString(payload.guestName);
   const guestEmail = safeString(payload.guestEmail);
@@ -237,37 +244,32 @@ function buildCheckoutBody(payload) {
     return sum + Number(item.basePriceMoney.amount);
   }, 0);
 
-  // If line items don't add up to the requested total, use a single fallback line
+  console.log(`Total check — requested: ${requestedTotalCents}, line items: ${lineItemsTotalCents}`);
+
   if (requestedTotalCents > 0 && lineItemsTotalCents !== requestedTotalCents) {
+    console.warn("Line item total mismatch — using fallback single line item");
     lineItems = buildFallbackLineItems(payload);
   }
 
-  // ── IMPORTANT: No quickPay block here ──────────────────────────────────────
-  // Using order-only mode so Square displays the full itemized breakdown
-  // on the checkout page (dates, line items, guest name in note, etc.)
-  // quickPay overrides line items and shows only a single price — removed.
-  // ──────────────────────────────────────────────────────────────────────────
-  const order = {
-    locationId: LOCATION_ID,
-    lineItems,
-    pricingOptions: {
-      autoApplyTaxes: false,
-      autoApplyDiscounts: false,
-    },
-    referenceId: bookingRef,
-    metadata: {
-      bookingRef,
-      guestName,
-      checkin,
-      checkout,
-      guests: safeString(payload.guests),
-      nights: safeString(payload.nights),
-    },
-  };
-
   return {
     idempotencyKey: crypto.randomUUID(),
-    order,
+    order: {
+      locationId: LOCATION_ID,
+      lineItems,
+      pricingOptions: {
+        autoApplyTaxes: false,
+        autoApplyDiscounts: false,
+      },
+      referenceId: bookingRef,
+      metadata: {
+        bookingRef,
+        guestName,
+        checkin,
+        checkout,
+        guests: safeString(payload.guests),
+        nights: safeString(payload.nights),
+      },
+    },
     checkoutOptions: {
       askForShippingAddress: false,
       merchantSupportEmail:
@@ -288,10 +290,7 @@ app.get("/", (_req, res) => {
   res.json({
     ok: true,
     service: "Coastal Tide Escapes Square checkout backend",
-    environment:
-      String(process.env.SQUARE_ENVIRONMENT || "production").toLowerCase() === "sandbox"
-        ? "sandbox"
-        : "production",
+    environment: isProduction ? "production" : "sandbox",
   });
 });
 
@@ -309,20 +308,20 @@ app.post("/create-checkout", async (req, res) => {
     if (!totalCents) {
       return res.status(400).json({ error: "Missing or invalid total" });
     }
-
     if (!checkin || !checkout) {
       return res.status(400).json({ error: "Missing checkin or checkout" });
     }
 
-    const body        = buildCheckoutBody(payload);
-    const response    = await checkoutApi.createPaymentLink(body);
-    const paymentLink = response.result?.paymentLink;
+    const body = buildCheckoutBody(payload);
+
+    // ── Square SDK v43: client.checkout.createPaymentLink (not checkoutApi)
+    const response    = await client.checkout.createPaymentLink(body);
+    const paymentLink = response.paymentLink;
 
     if (!paymentLink?.url) {
       return res.status(500).json({ error: "Square did not return a checkout URL" });
     }
 
-    // Send booking notification email to owner (non-blocking)
     await sendBookingNotification(payload, paymentLink.url);
 
     return res.json({
@@ -335,20 +334,11 @@ app.post("/create-checkout", async (req, res) => {
     });
   } catch (err) {
     console.error("Square checkout error:", err);
-
-    if (err instanceof ApiError) {
-      const details =
-        err.result?.errors
-          ?.map((e) => `${e.category || "ERROR"}: ${e.detail || e.code}`)
-          .join(" | ") ||
-        err.message ||
-        "Square API error";
-      return res.status(500).json({ error: details });
-    }
-
-    return res.status(500).json({
-      error: err && err.message ? err.message : "Unknown server error",
-    });
+    const message =
+      err?.errors?.map((e) => `${e.category}: ${e.detail}`).join(" | ") ||
+      err?.message ||
+      "Unknown server error";
+    return res.status(500).json({ error: message });
   }
 });
 
