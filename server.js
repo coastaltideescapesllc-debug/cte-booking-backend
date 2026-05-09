@@ -4,7 +4,7 @@ const cors = require("cors");
 const crypto = require("crypto");
 const nodemailer = require("nodemailer");
 
-// ── Square SDK v43 uses SquareClient + SquareEnvironment (not Client/Environment)
+// Square SDK v43 uses SquareClient + SquareEnvironment
 const { SquareClient, SquareEnvironment } = require("square");
 
 const app = express();
@@ -18,6 +18,9 @@ const client = new SquareClient({
   token: process.env.SQUARE_ACCESS_TOKEN,
   environment: isProduction ? SquareEnvironment.Production : SquareEnvironment.Sandbox,
 });
+
+// v43 still exposes checkoutApi as a property (not client.checkout)
+const checkoutApi = client.checkoutApi;
 
 const LOCATION_ID = process.env.SQUARE_LOCATION_ID;
 const PORT = process.env.PORT || 3000;
@@ -202,7 +205,7 @@ function buildFallbackLineItems(payload) {
 // ─── Order note ───────────────────────────────────────────────────────────────
 
 function buildOrderNote(payload) {
-  const parts = [];
+  const parts      = [];
   const bookingRef = safeString(payload.bookingRef);
   const guestName  = safeString(payload.guestName);
   const guestEmail = safeString(payload.guestEmail);
@@ -312,11 +315,11 @@ app.post("/create-checkout", async (req, res) => {
       return res.status(400).json({ error: "Missing checkin or checkout" });
     }
 
-    const body = buildCheckoutBody(payload);
+    const body     = buildCheckoutBody(payload);
+    const response = await checkoutApi.createPaymentLink(body);
 
-    // ── Square SDK v43: client.checkout.createPaymentLink (not checkoutApi)
-    const response    = await client.checkout.createPaymentLink(body);
-    const paymentLink = response.paymentLink;
+    // v43 wraps result differently — try both response shapes
+    const paymentLink = response.result?.paymentLink ?? response.paymentLink;
 
     if (!paymentLink?.url) {
       return res.status(500).json({ error: "Square did not return a checkout URL" });
@@ -336,6 +339,7 @@ app.post("/create-checkout", async (req, res) => {
     console.error("Square checkout error:", err);
     const message =
       err?.errors?.map((e) => `${e.category}: ${e.detail}`).join(" | ") ||
+      err?.result?.errors?.map((e) => `${e.category}: ${e.detail}`).join(" | ") ||
       err?.message ||
       "Unknown server error";
     return res.status(500).json({ error: message });
