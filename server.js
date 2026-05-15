@@ -353,5 +353,92 @@ app.post("/create-checkout", async (req, res) => {
 // ─── Start server ─────────────────────────────────────────────────────────────
 
 app.listen(PORT, () => {
+// ─── Square Webhook — Payment Confirmed → Google Calendar ─────────────────────
+// In Square Developer Dashboard → Webhooks, add:
+//   URL: https://coastal-tide-backend-95by.onrender.com/square-webhook
+//   Event: payment.completed
+
+app.post("/square-webhook", async (req, res) => {
+  try {
+    res.status(200).json({ ok: true });
+
+    const event = req.body;
+    if (!event || event.type !== "payment.completed") return;
+
+    const payment = event?.data?.object?.payment;
+    if (!payment) return;
+
+    const orderId    = payment.order_id || "";
+    const paymentId  = payment.id || "";
+    const amountPaid = payment.amount_money?.amount
+      ? Number(payment.amount_money.amount) / 100 : 0;
+
+    let bookingRef = "", guestName = "Guest", guestEmail = "", guestPhone = "";
+    let checkin = "", checkout = "", guests = 0, nights = 0;
+
+    if (orderId) {
+      try {
+        const { result } = await client.ordersApi.retrieveOrder(orderId);
+        const order = result?.order;
+        if (order) {
+          bookingRef = order.referenceId || "";
+          const m    = order.metadata || {};
+          guestName  = m.guestName  || m.guest_name  || guestName;
+          guestEmail = m.guestEmail || m.guest_email || "";
+          guestPhone = m.guestPhone || m.guest_phone || "";
+          checkin    = m.checkin    || m.check_in    || "";
+          checkout   = m.checkout   || m.check_out   || "";
+          guests     = Number(m.guests) || 0;
+          nights     = Number(m.nights) || 0;
+          if (!checkin && order.note) {
+            checkin  = (order.note.match(/Check-?in:\s*(\d{4}-\d{2}-\d{2})/i)  || [])[1] || "";
+            checkout = (order.note.match(/Check-?out:\s*(\d{4}-\d{2}-\d{2})/i) || [])[1] || "";
+          }
+          if (!bookingRef && order.note) {
+            bookingRef = (order.note.match(/Ref:\s*(CTE-[^\s\n]+)/i) || [])[1] || "";
+          }
+          if (guestName === "Guest" && order.note) {
+            guestName = (order.note.match(/Guest:\s*(.+?)(?:\n|$)/i) || [])[1]?.trim() || guestName;
+          }
+        }
+      } catch (orderErr) {
+        console.error("Could not retrieve Square order:", orderErr.message);
+      }
+    }
+
+    if (!checkin || !checkout) {
+      console.log("Square webhook: missing dates — skipping calendar. PaymentId:", paymentId);
+      return;
+    }
+
+    const gasUrl = process.env.GOOGLE_APPS_SCRIPT_URL;
+    if (!gasUrl) {
+      console.error("GOOGLE_APPS_SCRIPT_URL not set.");
+      return;
+    }
+
+    const payload = {
+      action: "squarePaymentConfirmed",
+      secret: process.env.WEBHOOK_SECRET || "",
+      paymentId, bookingRef,
+      guestName, guestEmail, guestPhone,
+      checkin, checkout, guests, nights, amountPaid,
+    };
+
+    const { default: fetch } = await import("node-fetch");
+    const scriptRes  = await fetch(gasUrl, {
+      method:  "POST",
+      headers: { "Content-Type": "text/plain;charset=utf-8" },
+      body:    JSON.stringify(payload),
+    });
+    const scriptData = await scriptRes.json().catch(() => ({}));
+    console.log("Apps Script response:", JSON.stringify(scriptData));
+
+  } catch (err) {
+    console.error("Square webhook handler error:", err.message);
+  }
+});
+
+
   console.log(`CTE backend listening on port ${PORT}`);
 });
