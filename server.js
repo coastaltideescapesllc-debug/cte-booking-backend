@@ -31,13 +31,8 @@ function toCents(value) {
 function money(amountCents, currency = "USD") {
   return { amount: BigInt(amountCents), currency };
 }
-function safeString(value) {
-  return String(value == null ? "" : value).trim();
-}
-function positiveCents(value) {
-  const cents = toCents(value);
-  return cents > 0 ? cents : 0;
-}
+function safeString(value) { return String(value == null ? "" : value).trim(); }
+function positiveCents(value) { const c = toCents(value); return c > 0 ? c : 0; }
 function round2(n) { return Math.round((Number(n) || 0) * 100) / 100; }
 
 // ══════════════════════════════════════════════════════════════════
@@ -243,8 +238,7 @@ async function sendBookingNotification(p, checkoutUrl) {
     await mailer.sendMail({
       from: `"Coastal Tide Escapes Bookings" <${process.env.NOTIFY_EMAIL_USER}>`,
       to: process.env.NOTIFY_EMAIL_TO,
-      subject,
-      html,
+      subject, html,
     });
     console.log("Booking notification email sent to", process.env.NOTIFY_EMAIL_TO);
   } catch (err) {
@@ -252,20 +246,20 @@ async function sendBookingNotification(p, checkoutUrl) {
   }
 }
 
-// ─── Line items (from SERVER-computed booking) ──────────────────────
+// ─── Line items — ALL POSITIVE (discounts folded into net lodging) ──
 function buildLineItems(b) {
   const items = [];
   const nightsLabel = b.nights ? ` • ${b.nights} night${b.nights !== 1 ? "s" : ""}` : "";
   const datesLabel  = (b.checkin && b.checkout) ? ` (${b.checkin} → ${b.checkout}${nightsLabel})` : "";
 
-  if (positiveCents(b.lodging) > 0)
-    items.push({ name: `Lodging${datesLabel}`, quantity: "1", basePriceMoney: money(toCents(b.lodging)) });
-  if (positiveCents(b.cleaning) > 0)
-    items.push({ name: "Cleaning Fee", quantity: "1", basePriceMoney: money(toCents(b.cleaning)) });
-  if (positiveCents(b.discountAmount) > 0)
-    items.push({ name: "Direct Booking Discount", quantity: "1", basePriceMoney: money(-toCents(b.discountAmount)) });
-  if (positiveCents(b.promoDiscount) > 0)
-    items.push({ name: `Promo Code (${b.promoCode})`, quantity: "1", basePriceMoney: money(-toCents(b.promoDiscount)) });
+  // Net lodging + cleaning AFTER any discounts/promos (always >= 0)
+  const hasReduction = positiveCents(b.discountAmount) > 0 || positiveCents(b.promoDiscount) > 0;
+  const lodgingName = hasReduction
+    ? `Lodging & Cleaning (after discounts)${datesLabel}`
+    : `Lodging & Cleaning${datesLabel}`;
+  if (positiveCents(b.lodgingPreTaxTotal) > 0)
+    items.push({ name: lodgingName, quantity: "1", basePriceMoney: money(toCents(b.lodgingPreTaxTotal)) });
+
   if (positiveCents(b.lodgingTaxAmount) > 0)
     items.push({ name: "Lodging Tax (7%)", quantity: "1", basePriceMoney: money(toCents(b.lodgingTaxAmount)) });
   if (positiveCents(b.golfCartBase) > 0)
@@ -285,6 +279,8 @@ function buildOrderNote(meta) {
   if (meta.checkin && meta.checkout) parts.push(`Stay: ${meta.checkin} to ${meta.checkout}`);
   if (meta.guests) parts.push(`Guests: ${meta.guests}`);
   if (meta.nights) parts.push(`Nights: ${meta.nights}`);
+  if (meta.discountAmount && Number(meta.discountAmount) > 0) parts.push(`Direct Discount: -$${meta.discountAmount}`);
+  if (meta.promoCode) parts.push(`Promo ${meta.promoCode}: -$${meta.promoDiscount}`);
   if (meta.rateMode) parts.push(`Rate Mode: ${meta.rateMode}`);
   return parts.join(" | ");
 }
@@ -297,8 +293,7 @@ app.get("/", (_req, res) => {
 });
 
 app.post("/quote", (req, res) => {
-  const i = req.body || {};
-  const result = computeBooking(i);
+  const result = computeBooking(req.body || {});
   if (!result.ok) return res.status(400).json({ ok: false, error: result.error });
   return res.json({ ok: true, booking: result.booking });
 });
@@ -326,6 +321,11 @@ app.post("/create-checkout", async (req, res) => {
       guests: String(b.guests), nights: String(b.nights),
     };
 
+    const noteMeta = { ...metadata, discountAmount: b.discountAmount, promoCode: b.promoCode, promoDiscount: b.promoDiscount, rateMode: b.rateMode };
+
+    // Only send buyerEmail if it looks valid (Square rejects malformed ones)
+    const emailOk = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(guestEmail);
+
     const body = {
       idempotencyKey: crypto.randomUUID(),
       order: {
@@ -340,8 +340,8 @@ app.post("/create-checkout", async (req, res) => {
         merchantSupportEmail: process.env.SQUARE_SUPPORT_EMAIL || "coastaltideescapesllc@gmail.com",
         redirectUrl: process.env.SQUARE_REDIRECT_URL || "https://www.coastaltideescapes.com/book-now",
       },
-      prePopulatedData: { buyerEmail: guestEmail || undefined },
-      paymentNote: buildOrderNote({ ...metadata, rateMode: b.rateMode }),
+      prePopulatedData: emailOk ? { buyerEmail: guestEmail } : undefined,
+      paymentNote: buildOrderNote(noteMeta),
     };
 
     const response = await checkoutApi.createPaymentLink(body);
@@ -445,7 +445,7 @@ app.post("/square-webhook", async (req, res) => {
 });
 
 // ══════════════════════════════════════════════════════════════════
-// START SERVER — single app.listen(), AFTER all routes
+// START SERVER — single app.listen(), after ALL routes
 // ══════════════════════════════════════════════════════════════════
 app.listen(PORT, () => {
   console.log(`CTE backend listening on port ${PORT}`);
