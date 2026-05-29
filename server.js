@@ -22,7 +22,7 @@ const checkoutApi = client.checkoutApi;
 const LOCATION_ID = process.env.SQUARE_LOCATION_ID;
 const PORT = process.env.PORT || 3000;
 
-// ─── Utility helpers ──────────────────────────────────────────────────────────
+// ─── Utility helpers ──────────────────────────────────────────────
 function toCents(value) {
   const num = Number(value);
   if (!Number.isFinite(num)) return 0;
@@ -40,16 +40,16 @@ function positiveCents(value) {
 }
 function round2(n) { return Math.round((Number(n) || 0) * 100) / 100; }
 
-// ═══════════════════════════════════════════════════════════════════════════════
-// PRICING ENGINE — SOURCE OF TRUTH. All rates/fees/promos live here.
-// ═══════════════════════════════════════════════════════════════════════════════
-const CLEANING_FEE       = 300;
-const LODGING_TAX_RATE   = 0.07;
-const GOLF_CART_TAX_RATE = 0.07;
+// ══════════════════════════════════════════════════════════════════
+// PRICING ENGINE — SOURCE OF TRUTH
+// ══════════════════════════════════════════════════════════════════
+const CLEANING_FEE        = 300;
+const LODGING_TAX_RATE    = 0.07;
+const GOLF_CART_TAX_RATE  = 0.07;
 const DIRECT_DISCOUNT_RATE = 0.10;
 
 const PROMO_CODES = {
-  COAST2026:  { type: "fixed",   amount: 150, label: "Guest Discount ($150 off)",  active: true },
+  COAST2026:  { type: "fixed",   amount: 150, label: "Guest Discount ($150 off)",   active: true },
   MILITARY10: { type: "percent", amount: 10,  label: "Military Discount (10% off)", active: true },
   WELCOME25:  { type: "fixed",   amount: 25,  label: "Welcome Promo ($25 off)",     active: true },
 };
@@ -125,7 +125,6 @@ function golfCartPrice(nights) {
   return 599;
 }
 
-// The ONE function that computes a booking. Used by both /quote and /create-checkout.
 function computeBooking(input) {
   const ratePlan = input.ratePlan === "floridarentals" ? "floridarentals" : "";
   const ciDate = parseDate(input.checkin);
@@ -167,9 +166,7 @@ function computeBooking(input) {
     if (def && def.active) {
       promoCode = promoRaw;
       promoLabel = def.label;
-      promoDiscount = def.type === "fixed"
-        ? def.amount
-        : round2(lodgingPreTax * (def.amount / 100));
+      promoDiscount = def.type === "fixed" ? def.amount : round2(lodgingPreTax * (def.amount / 100));
       promoDiscount = Math.min(promoDiscount, lodgingPreTax);
       lodgingPreTax -= promoDiscount;
     }
@@ -203,7 +200,7 @@ function computeBooking(input) {
   };
 }
 
-// ─── Email notification ───────────────────────────────────────────────────────
+// ─── Email notification ────────────────────────────────────────────
 function getMailer() {
   if (!process.env.NOTIFY_EMAIL_USER || !process.env.NOTIFY_EMAIL_PASS) return null;
   return nodemailer.createTransport({
@@ -255,7 +252,7 @@ async function sendBookingNotification(p, checkoutUrl) {
   }
 }
 
-// ─── Line items (built from the SERVER-computed booking) ────────────────────────
+// ─── Line items (from SERVER-computed booking) ──────────────────────
 function buildLineItems(b) {
   const items = [];
   const nightsLabel = b.nights ? ` • ${b.nights} night${b.nights !== 1 ? "s" : ""}` : "";
@@ -292,38 +289,26 @@ function buildOrderNote(meta) {
   return parts.join(" | ");
 }
 
-// ═══════════════════════════════════════════════════════════════════════════════
-// ROUTES  (all defined ABOVE app.listen)
-// ═══════════════════════════════════════════════════════════════════════════════
+// ══════════════════════════════════════════════════════════════════
+// ROUTES (all ABOVE app.listen)
+// ══════════════════════════════════════════════════════════════════
 app.get("/", (_req, res) => {
-  res.json({
-    ok: true,
-    service: "Coastal Tide Escapes Square checkout backend",
-    environment: isProduction ? "production" : "sandbox",
-  });
+  res.json({ ok: true, service: "Coastal Tide Escapes Square checkout backend", environment: isProduction ? "production" : "sandbox" });
 });
 
-// ── /quote : frontend sends booking inputs, backend returns the price ──────────
 app.post("/quote", (req, res) => {
   const i = req.body || {};
-  const result = computeBooking({
-    checkin: i.checkin, checkout: i.checkout, guests: i.guests,
-    promoCode: i.promoCode, golfCart: i.golfCart, ratePlan: i.ratePlan,
-  });
+  const result = computeBooking(i);
   if (!result.ok) return res.status(400).json({ ok: false, error: result.error });
   return res.json({ ok: true, booking: result.booking });
 });
 
-// ── /create-checkout : RECOMPUTES server-side, never trusts client totals ──────
 app.post("/create-checkout", async (req, res) => {
   try {
     if (!LOCATION_ID) return res.status(500).json({ error: "Missing SQUARE_LOCATION_ID" });
 
     const i = req.body || {};
-    const result = computeBooking({
-      checkin: i.checkin, checkout: i.checkout, guests: i.guests,
-      promoCode: i.promoCode, golfCart: i.golfCart, ratePlan: i.ratePlan,
-    });
+    const result = computeBooking(i);
     if (!result.ok) return res.status(400).json({ error: result.error });
 
     const b = result.booking;
@@ -336,14 +321,9 @@ app.post("/create-checkout", async (req, res) => {
     if (!lineItems.length) return res.status(400).json({ error: "Nothing to charge." });
 
     const metadata = {
-      bookingRef,
-      guestName,
-      guestEmail,
-      guestPhone,
-      checkin: b.checkin,
-      checkout: b.checkout,
-      guests: String(b.guests),
-      nights: String(b.nights),
+      bookingRef, guestName, guestEmail, guestPhone,
+      checkin: b.checkin, checkout: b.checkout,
+      guests: String(b.guests), nights: String(b.nights),
     };
 
     const body = {
@@ -368,10 +348,7 @@ app.post("/create-checkout", async (req, res) => {
     const paymentLink = response.result?.paymentLink;
     if (!paymentLink?.url) return res.status(500).json({ error: "Square did not return a checkout URL" });
 
-    await sendBookingNotification(
-      { ...b, bookingRef, guestName, guestEmail, guestPhone },
-      paymentLink.url
-    );
+    await sendBookingNotification({ ...b, bookingRef, guestName, guestEmail, guestPhone }, paymentLink.url);
 
     return res.json({
       ok: true,
@@ -390,12 +367,11 @@ app.post("/create-checkout", async (req, res) => {
   }
 });
 
-// ── /square-webhook : payment.completed → Google Calendar via Apps Script ──────
 // Square Developer Dashboard → Webhooks:
 //   URL:   https://coastal-tide-backend-95by.onrender.com/square-webhook
 //   Event: payment.completed
 app.post("/square-webhook", async (req, res) => {
-  res.status(200).json({ ok: true }); // ack immediately
+  res.status(200).json({ ok: true });
   try {
     const event = req.body;
     if (!event || event.type !== "payment.completed") return;
@@ -468,5 +444,9 @@ app.post("/square-webhook", async (req, res) => {
   }
 });
 
-// ═══════════════════════════════════════════════════════════════════════════════
-// START SER
+// ══════════════════════════════════════════════════════════════════
+// START SERVER — single app.listen(), AFTER all routes
+// ══════════════════════════════════════════════════════════════════
+app.listen(PORT, () => {
+  console.log(`CTE backend listening on port ${PORT}`);
+});
