@@ -67,6 +67,7 @@ const FR_RATES = [
 function pad2(n) { return String(n).padStart(2, "0"); }
 function mdKey(d) { return pad2(d.getMonth() + 1) + "-" + pad2(d.getDate()); }
 function isoKey(d) { return d.getFullYear() + "-" + pad2(d.getMonth() + 1) + "-" + pad2(d.getDate()); }
+
 function parseDate(v) {
   if (!v) return null;
   const parts = String(v).split("-");
@@ -76,6 +77,7 @@ function parseDate(v) {
   const dt = new Date(y, m - 1, d);
   return (dt.getFullYear() === y && dt.getMonth() === m - 1 && dt.getDate() === d) ? dt : null;
 }
+
 function nightsBetween(ci, co) { return Math.round((co.getTime() - ci.getTime()) / 86400000); }
 function isWeekend(date) { const day = date.getDay(); return day === 5 || day === 6; }
 
@@ -85,6 +87,7 @@ function nightlyRateDefault(date) {
   if ((md >= "03-01" && md <= "03-31") || (md >= "09-01" && md <= "10-31")) return wknd ? 275 : 250;
   return wknd ? 250 : 225;
 }
+
 function findFRRate(dateObj) {
   const t = dateObj.getTime();
   for (const r of FR_RATES) {
@@ -93,6 +96,7 @@ function findFRRate(dateObj) {
   }
   return null;
 }
+
 function nightlyRateWithPlan(dateObj, stayNights, ratePlan) {
   if (ratePlan === "floridarentals") {
     const r = findFRRate(dateObj);
@@ -104,6 +108,7 @@ function nightlyRateWithPlan(dateObj, stayNights, ratePlan) {
   }
   return { ok: true, rate: nightlyRateDefault(dateObj), minStay: 1 };
 }
+
 function inDiscountWindow(ci, co) {
   const n = nightsBetween(ci, co);
   if (n < 3) return false;
@@ -114,6 +119,7 @@ function inDiscountWindow(ci, co) {
   }
   return false;
 }
+
 function golfCartPrice(nights) {
   if (nights <= 3) return 375;
   if (nights <= 5) return 499;
@@ -143,12 +149,13 @@ function computeBooking(input) {
     lodging += rr.rate;
     minStayRequired = Math.max(minStayRequired, rr.minStay || 1);
   }
+
   if (ratePlan === "floridarentals" && nights < minStayRequired)
     return { ok: false, error: "Minimum stay for these dates is " + minStayRequired + " nights." };
 
   let lodgingPreTax = lodging + CLEANING_FEE;
-
   let discountApplied = false, discountAmount = 0;
+
   if (ratePlan !== "floridarentals" && inDiscountWindow(ciDate, coDate)) {
     discountApplied = true;
     discountAmount = lodgingPreTax * DIRECT_DISCOUNT_RATE;
@@ -203,9 +210,11 @@ function getMailer() {
     auth: { user: process.env.NOTIFY_EMAIL_USER, pass: process.env.NOTIFY_EMAIL_PASS },
   });
 }
+
 async function sendBookingNotification(p, checkoutUrl) {
   const mailer = getMailer();
   if (!mailer || !process.env.NOTIFY_EMAIL_TO) return;
+
   const subject = `New Booking: ${p.guestName || "Guest"} | ${p.checkin} → ${p.checkout} | ${p.bookingRef}`;
   const html = `
     <h2 style="color:#0b5ea8;">New Coastal Tide Escapes Booking</h2>
@@ -234,6 +243,7 @@ async function sendBookingNotification(p, checkoutUrl) {
     <p style="margin-top:20px;font-family:Arial,sans-serif;font-size:13px;">
       <a href="${checkoutUrl}" style="color:#0b5ea8;">View Square Checkout Link</a>
     </p>`;
+
   try {
     await mailer.sendMail({
       from: `"Coastal Tide Escapes Bookings" <${process.env.NOTIFY_EMAIL_USER}>`,
@@ -252,18 +262,20 @@ function buildLineItems(b) {
   const nightsLabel = b.nights ? ` • ${b.nights} night${b.nights !== 1 ? "s" : ""}` : "";
   const datesLabel  = (b.checkin && b.checkout) ? ` (${b.checkin} → ${b.checkout}${nightsLabel})` : "";
 
-  // Net lodging + cleaning AFTER any discounts/promos (always >= 0)
   const hasReduction = positiveCents(b.discountAmount) > 0 || positiveCents(b.promoDiscount) > 0;
   const lodgingName = hasReduction
     ? `Lodging & Cleaning (after discounts)${datesLabel}`
     : `Lodging & Cleaning${datesLabel}`;
+
   if (positiveCents(b.lodgingPreTaxTotal) > 0)
     items.push({ name: lodgingName, quantity: "1", basePriceMoney: money(toCents(b.lodgingPreTaxTotal)) });
 
   if (positiveCents(b.lodgingTaxAmount) > 0)
     items.push({ name: "Lodging Tax (7%)", quantity: "1", basePriceMoney: money(toCents(b.lodgingTaxAmount)) });
+
   if (positiveCents(b.golfCartBase) > 0)
     items.push({ name: "6-Seater Golf Cart Add-On", quantity: "1", basePriceMoney: money(toCents(b.golfCartBase)) });
+
   if (positiveCents(b.golfCartTax) > 0)
     items.push({ name: "Golf Cart Tax (7%)", quantity: "1", basePriceMoney: money(toCents(b.golfCartTax)) });
 
@@ -305,12 +317,12 @@ app.post("/create-checkout", async (req, res) => {
     const i = req.body || {};
     const result = computeBooking(i);
     if (!result.ok) return res.status(400).json({ error: result.error });
-
     const b = result.booking;
+
     const bookingRef = safeString(i.bookingRef) || `CTE-${Date.now()}`;
     const guestName  = safeString(i.guestName);
-    const guestEmail = safeString(i.guestEmail);
-    const guestPhone = safeString(i.guestPhone);
+    const guestEmail = safeString(i.guestEmail || i.email);
+    const guestPhone = safeString(i.guestPhone || i.phone);
 
     const lineItems = buildLineItems(b);
     if (!lineItems.length) return res.status(400).json({ error: "Nothing to charge." });
@@ -320,10 +332,8 @@ app.post("/create-checkout", async (req, res) => {
       checkin: b.checkin, checkout: b.checkout,
       guests: String(b.guests), nights: String(b.nights),
     };
-
     const noteMeta = { ...metadata, discountAmount: b.discountAmount, promoCode: b.promoCode, promoDiscount: b.promoDiscount, rateMode: b.rateMode };
 
-    // Only send buyerEmail if it looks valid (Square rejects malformed ones)
     const emailOk = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(guestEmail);
 
     const body = {
@@ -358,9 +368,11 @@ app.post("/create-checkout", async (req, res) => {
       orderId: paymentLink.orderId || "",
     });
   } catch (err) {
-    console.error("Square checkout error:", err);
+    console.error("Square checkout error:", JSON.stringify(err?.result || err?.message || err, null, 2));
     if (err instanceof ApiError) {
-      const details = err.result?.errors?.map((e) => `${e.category}: ${e.detail}`).join(" | ") || err.message;
+      const details = err.result?.errors?.map((e) =>
+        `${e.category}/${e.code}: ${e.detail || ""}${e.field ? ` [field: ${e.field}]` : ""}`
+      ).join(" | ") || err.message;
       return res.status(500).json({ error: details });
     }
     return res.status(500).json({ error: err?.message || "Unknown server error" });
