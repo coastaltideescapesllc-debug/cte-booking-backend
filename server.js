@@ -44,9 +44,10 @@ const GOLF_CART_TAX_RATE  = 0.07;
 const DIRECT_DISCOUNT_RATE = 0.10;
 
 const PROMO_CODES = {
-  COAST2026:  { type: "fixed",   amount: 150, label: "Guest Discount ($150 off)",   active: true },
-  MILITARY10: { type: "percent", amount: 10,  label: "Military Discount (10% off)", active: true },
-  WELCOME25:  { type: "fixed",   amount: 25,  label: "Welcome Promo ($25 off)",     active: true },
+  COAST2026:  { type: "fixed",    amount: 150,  label: "Guest Discount ($150 off)",      active: true },
+  MILITARY10: { type: "percent",  amount: 10,   label: "Military Discount (10% off)",    active: true },
+  WELCOME25:  { type: "fixed",    amount: 25,   label: "Welcome Promo ($25 off)",        active: true },
+  FIXED1000:  { type: "override", amount: 1000, label: "Special Rate — Total $1,000.00", active: true },
 };
 
 const FR_RATES = [
@@ -141,6 +142,32 @@ function computeBooking(input) {
   const nights = nightsBetween(ciDate, coDate);
   if (nights <= 0) return { ok: false, error: "Please select at least 1 night." };
 
+  // ── OVERRIDE PROMO: force exact total regardless of stay/golf cart ──
+  const overrideDef = promoRaw ? PROMO_CODES[promoRaw] : null;
+  if (overrideDef && overrideDef.active && overrideDef.type === "override") {
+    const fixedTotal = round2(overrideDef.amount);
+    return {
+      ok: true,
+      booking: {
+        ratePlan,
+        checkin: isoKey(ciDate), checkout: isoKey(coDate),
+        guests, nights,
+        lodging: 0,
+        cleaning: 0,
+        discountApplied: false, discountAmount: 0,
+        promoCode: promoRaw, promoDiscount: 0, promoLabel: overrideDef.label,
+        promoOverride: true,
+        lodgingPreTaxTotal: fixedTotal,
+        lodgingTaxAmount: 0,
+        golfCartSelected: wantsGolfCart,
+        golfCartBase: 0,
+        golfCartTax: 0,
+        total: fixedTotal,
+        rateMode: overrideDef.label,
+      },
+    };
+  }
+
   let lodging = 0, minStayRequired = 1;
   for (let i = 0; i < nights; i++) {
     const d = new Date(ciDate.getTime() + i * 86400000);
@@ -165,7 +192,7 @@ function computeBooking(input) {
   let promoCode = "", promoDiscount = 0, promoLabel = "";
   if (promoRaw) {
     const def = PROMO_CODES[promoRaw];
-    if (def && def.active) {
+    if (def && def.active && def.type !== "override") {
       promoCode = promoRaw;
       promoLabel = def.label;
       promoDiscount = def.type === "fixed" ? def.amount : round2(lodgingPreTax * (def.amount / 100));
@@ -189,6 +216,7 @@ function computeBooking(input) {
       cleaning: CLEANING_FEE,
       discountApplied, discountAmount: round2(discountAmount),
       promoCode, promoDiscount: round2(promoDiscount), promoLabel,
+      promoOverride: false,
       lodgingPreTaxTotal: round2(lodgingPreTax),
       lodgingTaxAmount: round2(lodgingTax),
       golfCartSelected: wantsGolfCart,
@@ -229,11 +257,12 @@ async function sendBookingNotification(p, checkoutUrl) {
       <tr><td style="padding:4px 12px 4px 0;color:#555;">Guests</td><td>${p.guests || "—"}</td></tr>
       <tr><td style="padding:8px 12px 4px 0;color:#555;border-top:1px solid #eee;">Lodging</td><td style="border-top:1px solid #eee;">$${p.lodging}</td></tr>
       <tr><td style="padding:4px 12px 4px 0;color:#555;">Cleaning Fee</td><td>$${p.cleaning}</td></tr>
-      ${p.discountApplied ? `<tr><td style="padding:4px 12px 4px 0;color:#555;">Discount</td><td style="color:#c0392b;">-$${p.discountAmount}</td></tr>` : ""}
-      ${p.promoCode ? `<tr><td style="padding:4px 12px 4px 0;color:#555;">Promo (${p.promoCode})</td><td style="color:#c0392b;">-$${p.promoDiscount}</td></tr>` : ""}
-      <tr><td style="padding:4px 12px 4px 0;color:#555;">Lodging Tax (7%)</td><td>$${p.lodgingTaxAmount}</td></tr>
-      ${p.golfCartSelected ? `<tr><td style="padding:4px 12px 4px 0;color:#555;">Golf Cart (6-Seater)</td><td>$${p.golfCartBase}</td></tr>` : ""}
-      ${p.golfCartSelected ? `<tr><td style="padding:4px 12px 4px 0;color:#555;">Golf Cart Tax (7%)</td><td>$${p.golfCartTax}</td></tr>` : ""}
+      ${p.promoOverride ? `<tr><td style="padding:4px 12px 4px 0;color:#555;">Special Rate</td><td style="color:#0b5ea8;">${p.promoLabel}</td></tr>` : ""}
+      ${(!p.promoOverride && p.discountApplied) ? `<tr><td style="padding:4px 12px 4px 0;color:#555;">Discount</td><td style="color:#c0392b;">-$${p.discountAmount}</td></tr>` : ""}
+      ${(!p.promoOverride && p.promoCode) ? `<tr><td style="padding:4px 12px 4px 0;color:#555;">Promo (${p.promoCode})</td><td style="color:#c0392b;">-$${p.promoDiscount}</td></tr>` : ""}
+      ${!p.promoOverride ? `<tr><td style="padding:4px 12px 4px 0;color:#555;">Lodging Tax (7%)</td><td>$${p.lodgingTaxAmount}</td></tr>` : ""}
+      ${p.golfCartSelected && !p.promoOverride ? `<tr><td style="padding:4px 12px 4px 0;color:#555;">Golf Cart (6-Seater)</td><td>$${p.golfCartBase}</td></tr>` : ""}
+      ${p.golfCartSelected && !p.promoOverride ? `<tr><td style="padding:4px 12px 4px 0;color:#555;">Golf Cart Tax (7%)</td><td>$${p.golfCartTax}</td></tr>` : ""}
       <tr>
         <td style="padding:10px 12px 4px 0;color:#0b5ea8;font-weight:bold;font-size:16px;border-top:2px solid #0b5ea8;">Total Charged</td>
         <td style="padding:10px 0 4px 0;font-weight:bold;font-size:16px;color:#0b5ea8;border-top:2px solid #0b5ea8;">$${p.total}</td>
@@ -259,6 +288,18 @@ async function sendBookingNotification(p, checkoutUrl) {
 // ─── Line items — ALL POSITIVE (discounts folded into net lodging) ──
 function buildLineItems(b) {
   const items = [];
+
+  // Override promo → single positive line item for the fixed total
+  if (b.promoOverride) {
+    const cartNote = b.golfCartSelected ? " incl. golf cart" : "";
+    items.push({
+      name: `Coastal Tide Escapes Stay — Special Rate${cartNote} (${b.checkin} → ${b.checkout})`,
+      quantity: "1",
+      basePriceMoney: money(toCents(b.total)),
+    });
+    return items;
+  }
+
   const nightsLabel = b.nights ? ` • ${b.nights} night${b.nights !== 1 ? "s" : ""}` : "";
   const datesLabel  = (b.checkin && b.checkout) ? ` (${b.checkin} → ${b.checkout}${nightsLabel})` : "";
 
@@ -291,8 +332,9 @@ function buildOrderNote(meta) {
   if (meta.checkin && meta.checkout) parts.push(`Stay: ${meta.checkin} to ${meta.checkout}`);
   if (meta.guests) parts.push(`Guests: ${meta.guests}`);
   if (meta.nights) parts.push(`Nights: ${meta.nights}`);
-  if (meta.discountAmount && Number(meta.discountAmount) > 0) parts.push(`Direct Discount: -$${meta.discountAmount}`);
-  if (meta.promoCode) parts.push(`Promo ${meta.promoCode}: -$${meta.promoDiscount}`);
+  if (meta.promoOverride) parts.push(`Special Rate Promo ${meta.promoCode}: Total $${meta.total}`);
+  if (!meta.promoOverride && meta.discountAmount && Number(meta.discountAmount) > 0) parts.push(`Direct Discount: -$${meta.discountAmount}`);
+  if (!meta.promoOverride && meta.promoCode) parts.push(`Promo ${meta.promoCode}: -$${meta.promoDiscount}`);
   if (meta.rateMode) parts.push(`Rate Mode: ${meta.rateMode}`);
   return parts.join(" | ");
 }
@@ -332,7 +374,7 @@ app.post("/create-checkout", async (req, res) => {
       checkin: b.checkin, checkout: b.checkout,
       guests: String(b.guests), nights: String(b.nights),
     };
-    const noteMeta = { ...metadata, discountAmount: b.discountAmount, promoCode: b.promoCode, promoDiscount: b.promoDiscount, rateMode: b.rateMode };
+    const noteMeta = { ...metadata, total: b.total, promoOverride: b.promoOverride, discountAmount: b.discountAmount, promoCode: b.promoCode, promoDiscount: b.promoDiscount, rateMode: b.rateMode };
 
     const emailOk = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(guestEmail);
 
@@ -414,51 +456,4 @@ app.post("/square-webhook", async (req, res) => {
           nights     = Number(m.nights) || 0;
 
           if (!checkin && order.note) {
-            checkin  = (order.note.match(/Stay:\s*(\d{4}-\d{2}-\d{2})/i) || [])[1] || "";
-            checkout = (order.note.match(/to\s*(\d{4}-\d{2}-\d{2})/i) || [])[1] || "";
-          }
-          if (!bookingRef && order.note)
-            bookingRef = (order.note.match(/Ref:\s*(CTE-[^\s|]+)/i) || [])[1] || "";
-          if (guestName === "Guest" && order.note)
-            guestName = (order.note.match(/Guest:\s*([^|]+)/i) || [])[1]?.trim() || guestName;
-        }
-      } catch (orderErr) {
-        console.error("Could not retrieve Square order:", orderErr.message);
-      }
-    }
-
-    if (!checkin || !checkout) {
-      console.log("Square webhook: missing dates — skipping calendar. PaymentId:", paymentId);
-      return;
-    }
-
-    const gasUrl = process.env.GOOGLE_APPS_SCRIPT_URL;
-    if (!gasUrl) { console.error("GOOGLE_APPS_SCRIPT_URL not set."); return; }
-
-    const payload = {
-      action: "squarePaymentConfirmed",
-      secret: process.env.WEBHOOK_SECRET || "",
-      paymentId, bookingRef,
-      guestName, guestEmail, guestPhone,
-      checkin, checkout, guests, nights, amountPaid,
-    };
-
-    const { default: fetch } = await import("node-fetch");
-    const scriptRes = await fetch(gasUrl, {
-      method: "POST",
-      headers: { "Content-Type": "text/plain;charset=utf-8" },
-      body: JSON.stringify(payload),
-    });
-    const scriptData = await scriptRes.json().catch(() => ({}));
-    console.log("Apps Script response:", JSON.stringify(scriptData));
-  } catch (err) {
-    console.error("Square webhook handler error:", err.message);
-  }
-});
-
-// ══════════════════════════════════════════════════════════════════
-// START SERVER — single app.listen(), after ALL routes
-// ══════════════════════════════════════════════════════════════════
-app.listen(PORT, () => {
-  console.log(`CTE backend listening on port ${PORT}`);
-});
+            checkin  = (order.note.match(/Stay:\s*(\d{4}-\d{2}-\d{2})/i) || [])[1] ||
