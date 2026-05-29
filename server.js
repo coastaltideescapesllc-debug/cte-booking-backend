@@ -454,6 +454,52 @@ app.post("/square-webhook", async (req, res) => {
           checkout   = m.checkout   || m.check_out   || "";
           guests     = Number(m.guests) || 0;
           nights     = Number(m.nights) || 0;
+if (!checkin && order.note) {
+            checkin  = (order.note.match(/Stay:\s*(\d{4}-\d{2}-\d{2})/i) || [])[1] || "";
+            checkout = (order.note.match(/to\s*(\d{4}-\d{2}-\d{2})/i) || [])[1] || "";
+          }
+          if (!bookingRef && order.note)
+            bookingRef = (order.note.match(/Ref:\s*(CTE-[^\s|]+)/i) || [])[1] || "";
+          if (guestName === "Guest" && order.note)
+            guestName = (order.note.match(/Guest:\s*([^|]+)/i) || [])[1]?.trim() || guestName;
+        }
+      } catch (orderErr) {
+        console.error("Could not retrieve Square order:", orderErr.message);
+      }
+    }
 
-          if (!checkin && order.note) {
-            checkin  = (order.note.match(/Stay:\s*(\d{4}-\d{2}-\d{2})/
+    if (!checkin || !checkout) {
+      console.log("Square webhook: missing dates — skipping calendar. PaymentId:", paymentId);
+      return;
+    }
+
+    const gasUrl = process.env.GOOGLE_APPS_SCRIPT_URL;
+    if (!gasUrl) { console.error("GOOGLE_APPS_SCRIPT_URL not set."); return; }
+
+    const payload = {
+      action: "squarePaymentConfirmed",
+      secret: process.env.WEBHOOK_SECRET || "",
+      paymentId, bookingRef,
+      guestName, guestEmail, guestPhone,
+      checkin, checkout, guests, nights, amountPaid,
+    };
+
+    const { default: fetch } = await import("node-fetch");
+    const scriptRes = await fetch(gasUrl, {
+      method: "POST",
+      headers: { "Content-Type": "text/plain;charset=utf-8" },
+      body: JSON.stringify(payload),
+    });
+    const scriptData = await scriptRes.json().catch(() => ({}));
+    console.log("Apps Script response:", JSON.stringify(scriptData));
+  } catch (err) {
+    console.error("Square webhook handler error:", err.message);
+  }
+});
+
+// ══════════════════════════════════════════════════════════════════
+// START SERVER — single app.listen(), after ALL routes
+// ══════════════════════════════════════════════════════════════════
+app.listen(PORT, () => {
+  console.log(`CTE backend listening on port ${PORT}`);
+});
