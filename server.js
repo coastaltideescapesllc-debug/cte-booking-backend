@@ -456,4 +456,4 @@ app.post("/square-webhook", async (req, res) => {
           nights     = Number(m.nights) || 0;
 
           if (!checkin && order.note) {
-            checkin  = (order.note.match(/Stay:\s*(\d{4}-\d{2}-\d{2})/i) || [])[1] ||
+            checkin  = (order.note.match(/Stay:\s*(\d{4}-\d{2}-\d{2})/
