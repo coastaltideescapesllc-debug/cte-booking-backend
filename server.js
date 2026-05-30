@@ -43,7 +43,7 @@ const PROMO_CODES = {
   COAST2026: { type: "fixed", amount: 150, label: "Guest Discount ($150 off)", active: true },
   MILITARY10: { type: "percent", amount: 10, label: "Military Discount (10% off)", active: true },
   WELCOME25: { type: "fixed", amount: 25, label: "Welcome Promo ($25 off)", active: true },
-  FIXED1000: { type: "override", amount: 1000, label: "Special Rate — Total $1,000.00", active: true },
+  FIXED1000: { type: "override", amount: 1000, label: "Special Rate - Total $1,000.00", active: true },
 };
 
 const FR_RATES = [
@@ -263,33 +263,35 @@ async function sendBookingNotification(p, checkoutUrl) {
   const mailer = getMailer();
   if (!mailer || !process.env.NOTIFY_EMAIL_TO) return;
 
-  const subject = `New Booking: ${p.guestName || "Guest"} | ${p.checkin} -> ${p.checkout} | ${p.bookingRef}`;
-  const html = `<h2 style="color:#0b5ea8;">New Coastal Tide Escapes Booking</h2>
-<table style="border-collapse:collapse;font-family:Arial,sans-serif;font-size:14px;">
-<tr><td style="padding:4px 12px 4px 0;color:#555;">Booking Ref</td><td><strong>${p.bookingRef || "-"}</strong></td></tr>
-<tr><td style="padding:4px 12px 4px 0;color:#555;">Guest Name</td><td>${p.guestName || "-"}</td></tr>
-<tr><td style="padding:4px 12px 4px 0;color:#555;">Email</td><td>${p.guestEmail || "-"}</td></tr>
-<tr><td style="padding:4px 12px 4px 0;color:#555;">Phone</td><td>${p.guestPhone || "-"}</td></tr>
-<tr><td style="padding:4px 12px 4px 0;color:#555;">Check-in</td><td>${p.checkin || "-"}</td></tr>
-<tr><td style="padding:4px 12px 4px 0;color:#555;">Check-out</td><td>${p.checkout || "-"}</td></tr>
-<tr><td style="padding:4px 12px 4px 0;color:#555;">Nights</td><td>${p.nights || "-"}</td></tr>
-<tr><td style="padding:4px 12px 4px 0;color:#555;">Guests</td><td>${p.guests || "-"}</td></tr>
-<tr><td style="padding:8px 12px 4px 0;color:#555;border-top:1px solid #eee;">Lodging</td><td style="border-top:1px solid #eee;">$${p.lodging}</td></tr>
-<tr><td style="padding:4px 12px 4px 0;color:#555;">Cleaning Fee</td><td>$${p.cleaning}</td></tr>
-${p.promoOverride ? `<tr><td style="padding:4px 12px 4px 0;color:#555;">Special Rate</td><td style="color:#0b5ea8;">${p.promoLabel}</td></tr>` : ""}
-${(!p.promoOverride && p.discountApplied) ? `<tr><td style="padding:4px 12px 4px 0;color:#555;">Discount</td><td style="color:#c0392b;">-$${p.discountAmount}</td></tr>` : ""}
-${(!p.promoOverride && p.promoCode) ? `<tr><td style="padding:4px 12px 4px 0;color:#555;">Promo (${p.promoCode})</td><td style="color:#c0392b;">-$${p.promoDiscount}</td></tr>` : ""}
-${!p.promoOverride ? `<tr><td style="padding:4px 12px 4px 0;color:#555;">Lodging Tax (7%)</td><td>$${p.lodgingTaxAmount}</td></tr>` : ""}
-${p.golfCartSelected && !p.promoOverride ? `<tr><td style="padding:4px 12px 4px 0;color:#555;">Golf Cart (6-Seater)</td><td>$${p.golfCartBase}</td></tr>` : ""}
-${p.golfCartSelected && !p.promoOverride ? `<tr><td style="padding:4px 12px 4px 0;color:#555;">Golf Cart Tax (7%)</td><td>$${p.golfCartTax}</td></tr>` : ""}
-<tr><td style="padding:10px 12px 4px 0;color:#0b5ea8;font-weight:bold;font-size:16px;border-top:2px solid #0b5ea8;">Total Charged</td><td style="padding:10px 0 4px 0;font-weight:bold;font-size:16px;color:#0b5ea8;border-top:2px solid #0b5ea8;">$${p.total}</td></tr>
-<tr><td style="padding:8px 12px 4px 0;color:#555;">Rate Mode</td><td>${p.rateMode || "-"}</td></tr>
-</table>
-<p style="margin-top:20px;font-family:Arial,sans-serif;font-size:13px;"><a href="${checkoutUrl}" style="color:#0b5ea8;">View Square Checkout Link</a></p>`;
+  const subject = "New Booking: " + (p.guestName || "Guest") + " | " + p.checkin + " to " + p.checkout + " | " + p.bookingRef;
+
+  let html = "";
+  html += "<h2 style='color:#0b5ea8;'>New Coastal Tide Escapes Booking</h2>";
+  html += "<table style='border-collapse:collapse;font-family:Arial,sans-serif;font-size:14px;'>";
+  html += "<tr><td style='padding:4px 12px 4px 0;color:#555;'>Booking Ref</td><td><strong>" + (p.bookingRef || "-") + "</strong></td></tr>";
+  html += "<tr><td style='padding:4px 12px 4px 0;color:#555;'>Guest Name</td><td>" + (p.guestName || "-") + "</td></tr>";
+  html += "<tr><td style='padding:4px 12px 4px 0;color:#555;'>Email</td><td>" + (p.guestEmail || "-") + "</td></tr>";
+  html += "<tr><td style='padding:4px 12px 4px 0;color:#555;'>Phone</td><td>" + (p.guestPhone || "-") + "</td></tr>";
+  html += "<tr><td style='padding:4px 12px 4px 0;color:#555;'>Check-in</td><td>" + (p.checkin || "-") + "</td></tr>";
+  html += "<tr><td style='padding:4px 12px 4px 0;color:#555;'>Check-out</td><td>" + (p.checkout || "-") + "</td></tr>";
+  html += "<tr><td style='padding:4px 12px 4px 0;color:#555;'>Nights</td><td>" + (p.nights || "-") + "</td></tr>";
+  html += "<tr><td style='padding:4px 12px 4px 0;color:#555;'>Guests</td><td>" + (p.guests || "-") + "</td></tr>";
+  html += "<tr><td style='padding:8px 12px 4px 0;color:#555;border-top:1px solid #eee;'>Lodging</td><td style='border-top:1px solid #eee;'>$" + p.lodging + "</td></tr>";
+  html += "<tr><td style='padding:4px 12px 4px 0;color:#555;'>Cleaning Fee</td><td>$" + p.cleaning + "</td></tr>";
+  if (p.promoOverride) html += "<tr><td style='padding:4px 12px 4px 0;color:#555;'>Special Rate</td><td style='color:#0b5ea8;'>" + p.promoLabel + "</td></tr>";
+  if (!p.promoOverride && p.discountApplied) html += "<tr><td style='padding:4px 12px 4px 0;color:#555;'>Discount</td><td style='color:#c0392b;'>-$" + p.discountAmount + "</td></tr>";
+  if (!p.promoOverride && p.promoCode) html += "<tr><td style='padding:4px 12px 4px 0;color:#555;'>Promo (" + p.promoCode + ")</td><td style='color:#c0392b;'>-$" + p.promoDiscount + "</td></tr>";
+  if (!p.promoOverride) html += "<tr><td style='padding:4px 12px 4px 0;color:#555;'>Lodging Tax (7%)</td><td>$" + p.lodgingTaxAmount + "</td></tr>";
+  if (p.golfCartSelected && !p.promoOverride) html += "<tr><td style='padding:4px 12px 4px 0;color:#555;'>Golf Cart (6-Seater)</td><td>$" + p.golfCartBase + "</td></tr>";
+  if (p.golfCartSelected && !p.promoOverride) html += "<tr><td style='padding:4px 12px 4px 0;color:#555;'>Golf Cart Tax (7%)</td><td>$" + p.golfCartTax + "</td></tr>";
+  html += "<tr><td style='padding:10px 12px 4px 0;color:#0b5ea8;font-weight:bold;font-size:16px;border-top:2px solid #0b5ea8;'>Total Charged</td><td style='padding:10px 0 4px 0;font-weight:bold;font-size:16px;color:#0b5ea8;border-top:2px solid #0b5ea8;'>$" + p.total + "</td></tr>";
+  html += "<tr><td style='padding:8px 12px 4px 0;color:#555;'>Rate Mode</td><td>" + (p.rateMode || "-") + "</td></tr>";
+  html += "</table>";
+  html += "<p style='margin-top:20px;font-family:Arial,sans-serif;font-size:13px;'><a href='" + checkoutUrl + "' style='color:#0b5ea8;'>View Square Checkout Link</a></p>";
 
   try {
     await mailer.sendMail({
-      from: `"Coastal Tide Escapes Bookings" <${process.env.NOTIFY_EMAIL_USER}>`,
+      from: "Coastal Tide Escapes Bookings <" + process.env.NOTIFY_EMAIL_USER + ">",
       to: process.env.NOTIFY_EMAIL_TO,
       subject, html,
     });
@@ -305,20 +307,20 @@ function buildLineItems(b) {
   if (b.promoOverride) {
     const cartNote = b.golfCartSelected ? " incl. golf cart" : "";
     items.push({
-      name: `Coastal Tide Escapes Stay - Special Rate${cartNote} (${b.checkin} -> ${b.checkout})`,
+      name: "Coastal Tide Escapes Stay - Special Rate" + cartNote + " (" + b.checkin + " to " + b.checkout + ")",
       quantity: "1",
       basePriceMoney: money(toCents(b.total)),
     });
     return items;
   }
 
-  const nightsLabel = b.nights ? ` - ${b.nights} night${b.nights !== 1 ? "s" : ""}` : "";
-  const datesLabel = (b.checkin && b.checkout) ? ` (${b.checkin} -> ${b.checkout}${nightsLabel})` : "";
+  const nightsLabel = b.nights ? (" - " + b.nights + " night" + (b.nights !== 1 ? "s" : "")) : "";
+  const datesLabel = (b.checkin && b.checkout) ? (" (" + b.checkin + " to " + b.checkout + nightsLabel + ")") : "";
 
   const hasReduction = positiveCents(b.discountAmount) > 0 || positiveCents(b.promoDiscount) > 0;
   const lodgingName = hasReduction
-    ? `Lodging & Cleaning (after discounts)${datesLabel}`
-    : `Lodging & Cleaning${datesLabel}`;
+    ? ("Lodging & Cleaning (after discounts)" + datesLabel)
+    : ("Lodging & Cleaning" + datesLabel);
 
   if (positiveCents(b.lodgingPreTaxTotal) > 0)
     items.push({ name: lodgingName, quantity: "1", basePriceMoney: money(toCents(b.lodgingPreTaxTotal)) });
@@ -337,18 +339,18 @@ function buildLineItems(b) {
 
 function buildOrderNote(meta) {
   const parts = [];
-  if (meta.bookingRef) parts.push(`Booking Ref: ${meta.bookingRef}`);
-  if (meta.guestName) parts.push(`Guest: ${meta.guestName}`);
-  if (meta.guestEmail) parts.push(`Email: ${meta.guestEmail}`);
-  if (meta.guestPhone) parts.push(`Phone: ${meta.guestPhone}`);
-  if (meta.checkin && meta.checkout) parts.push(`Stay: ${meta.checkin} to ${meta.checkout}`);
-  if (meta.guests) parts.push(`Guests: ${meta.guests}`);
-  if (meta.nights) parts.push(`Nights: ${meta.nights}`);
-  if (meta.promoOverride) parts.push(`Special Rate Promo ${meta.promoCode}: Total $${meta.total}`);
-  if (!meta.promoOverride && meta.discountAmount && Number(meta.discountAmount) > 0) parts.push(`Direct Discount: -$${meta.discountAmount}`);
-  if (!meta.promoOverride && meta.promoCode) parts.push(`Promo ${meta.promoCode}: -$${meta.promoDiscount}`);
-  if (meta.golfCartOnly) parts.push(`GOLF CART ONLY (Off-Site Booking)`);
-  if (meta.rateMode) parts.push(`Rate Mode: ${meta.rateMode}`);
+  if (meta.bookingRef) parts.push("Booking Ref: " + meta.bookingRef);
+  if (meta.guestName) parts.push("Guest: " + meta.guestName);
+  if (meta.guestEmail) parts.push("Email: " + meta.guestEmail);
+  if (meta.guestPhone) parts.push("Phone: " + meta.guestPhone);
+  if (meta.checkin && meta.checkout) parts.push("Stay: " + meta.checkin + " to " + meta.checkout);
+  if (meta.guests) parts.push("Guests: " + meta.guests);
+  if (meta.nights) parts.push("Nights: " + meta.nights);
+  if (meta.promoOverride) parts.push("Special Rate Promo " + meta.promoCode + ": Total $" + meta.total);
+  if (!meta.promoOverride && meta.discountAmount && Number(meta.discountAmount) > 0) parts.push("Direct Discount: -$" + meta.discountAmount);
+  if (!meta.promoOverride && meta.promoCode) parts.push("Promo " + meta.promoCode + ": -$" + meta.promoDiscount);
+  if (meta.golfCartOnly) parts.push("GOLF CART ONLY (Off-Site Booking)");
+  if (meta.rateMode) parts.push("Rate Mode: " + meta.rateMode);
   return parts.join(" | ");
 }
 
@@ -369,7 +371,7 @@ app.post("/quote", (req, res) => {
     if (!result.ok) return res.status(400).json({ error: result.error });
     const b = result.booking;
 
-    const bookingRef = safeString(i.bookingRef) || `CTE-${Date.now()}`;
+    const bookingRef = safeString(i.bookingRef) || ("CTE-" + Date.now());
     const guestName = safeString(i.guestName);
     const guestEmail = safeString(i.guestEmail || i.email);
     const guestPhone = safeString(i.guestPhone || i.phone);
@@ -410,8 +412,8 @@ app.post("/quote", (req, res) => {
     };
 
     const response = await checkoutApi.createPaymentLink(body);
-    const paymentLink = response.result?.paymentLink;
-    if (!paymentLink?.url) return res.status(500).json({ error: "Square did not return a checkout URL" });
+    const paymentLink = response.result && response.result.paymentLink;
+    if (!paymentLink || !paymentLink.url) return res.status(500).json({ error: "Square did not return a checkout URL" });
 
     await sendBookingNotification({ ...b, bookingRef, guestName, guestEmail, guestPhone }, paymentLink.url);
 
@@ -423,14 +425,14 @@ app.post("/quote", (req, res) => {
       orderId: paymentLink.orderId || "",
     });
   } catch (err) {
-    console.error("Square checkout error:", JSON.stringify(err?.result || err?.message || err, null, 2));
+    console.error("Square checkout error:", JSON.stringify((err && err.result) || (err && err.message) || err, null, 2));
     if (err instanceof ApiError) {
-      const details = err.result?.errors?.map((e) =>
-        `${e.category}/${e.code}: ${e.detail || ""}${e.field ? ` [field: ${e.field}]` : ""}`
-      ).join(" | ") || err.message;
+      const details = (err.result && err.result.errors ? err.result.errors.map(function (e) {
+        return e.category + "/" + e.code + ": " + (e.detail || "") + (e.field ? (" [field: " + e.field + "]") : "");
+      }).join(" | ") : "") || err.message;
       return res.status(500).json({ error: details });
     }
-    return res.status(500).json({ error: err?.message || "Unknown server error" });
+    return res.status(500).json({ error: (err && err.message) || "Unknown server error" });
   }
 });
 
@@ -440,23 +442,23 @@ app.post("/square-webhook", async (req, res) => {
     const event = req.body;
     if (!event || event.type !== "payment.completed") return;
 
-    const payment = event?.data?.object?.payment;
+    const payment = event && event.data && event.data.object && event.data.object.payment;
     if (!payment) return;
 
     const orderId = payment.order_id || "";
     const paymentId = payment.id || "";
-    const amountPaid = payment.amount_money?.amount ? Number(payment.amount_money.amount) / 100 : 0;
+    const amountPaid = (payment.amount_money && payment.amount_money.amount) ? Number(payment.amount_money.amount) / 100 : 0;
 
-    let bookingRef = "", guestName =let bookingRef = "", guestName = "Guest", guestEmail = "", guestPhone = "";
+    let bookingRef = "", guestName = "Guest", guestEmail = "", guestPhone = "";
     let checkin = "", checkout = "", guests = 0, nights = 0;
 
     if (orderId) {
       try {
         const { result } = await client.ordersApi.retrieveOrder(orderId);
-        const order = result?.order;
+        const order = result && result.order;
         if (order) {
           bookingRef = order.referenceId || "";
-          const m = order.metadata || {};
+          constconst m = order.metadata || {};
           guestName = m.guestName || m.guest_name || guestName;
           guestEmail = m.guestEmail || m.guest_email || "";
           guestPhone = m.guestPhone || m.guest_phone || "";
@@ -470,8 +472,10 @@ app.post("/square-webhook", async (req, res) => {
           }
           if (!bookingRef && order.note)
             bookingRef = (order.note.match(/Ref:\s*(CTE-[^\s|]+)/i) || [])[1] || "";
-          if (guestName === "Guest" && order.note)
-            guestName = (order.note.match(/Guest:\s*([^|]+)/i) || [])[1]?.trim() || guestName;
+          if (guestName === "Guest" && order.note) {
+            const gm = order.note.match(/Guest:\s*([^|]+)/i);
+            if (gm && gm[1]) guestName = gm[1].trim();
+          }
         }
       } catch (orderErr) {
         console.error("Could not retrieve Square order:", orderErr.message);
@@ -494,19 +498,20 @@ app.post("/square-webhook", async (req, res) => {
       checkin, checkout, guests, nights, amountPaid,
     };
 
-    const { default: fetch } = await import("node-fetch");
-    const scriptRes = await fetch(gasUrl, {
+    const nodeFetch = await import("node-fetch");
+    const fetchFn = nodeFetch.default;
+    const scriptRes = await fetchFn(gasUrl, {
       method: "POST",
       headers: { "Content-Type": "text/plain;charset=utf-8" },
       body: JSON.stringify(payload),
     });
-    const scriptData = await scriptRes.json().catch(() => ({}));
+    const scriptData = await scriptRes.json().catch(function () { return {}; });
     console.log("Apps Script response:", JSON.stringify(scriptData));
   } catch (err) {
     console.error("Square webhook handler error:", err.message);
   }
 });
 
-app.listen(PORT, () => {
-  console.log(`CTE backend listening on port ${PORT}`);
+app.listen(PORT, function () {
+  console.log("CTE backend listening on port " + PORT);
 });
