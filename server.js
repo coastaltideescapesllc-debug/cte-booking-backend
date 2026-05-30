@@ -22,7 +22,6 @@ const checkoutApi = client.checkoutApi;
 const LOCATION_ID = process.env.SQUARE_LOCATION_ID;
 const PORT = process.env.PORT || 3000;
 
-// ─── Utility helpers ──────────────────────────────────────────────
 function toCents(value) {
   const num = Number(value);
   if (!Number.isFinite(num)) return 0;
@@ -35,9 +34,6 @@ function safeString(value) { return String(value == null ? "" : value).trim(); }
 function positiveCents(value) { const c = toCents(value); return c > 0 ? c : 0; }
 function round2(n) { return Math.round((Number(n) || 0) * 100) / 100; }
 
-// ══════════════════════════════════════════════════════════════════
-// PRICING ENGINE — SOURCE OF TRUTH
-// ══════════════════════════════════════════════════════════════════
 const CLEANING_FEE = 300;
 const LODGING_TAX_RATE = 0.07;
 const GOLF_CART_TAX_RATE = 0.07;
@@ -142,9 +138,6 @@ function computeBooking(input) {
   const nights = nightsBetween(ciDate, coDate);
   if (nights <= 0) return { ok: false, error: "Please select at least 1 night." };
 
-  // ── GOLF-CART-ONLY MODE: off-site guests paying for just the cart ──
-  // Reuses golfCartPrice() so the $375/$499/$599 tier logic stays in one place.
-  // Skips all lodging, cleaning, discounts, promos, and taxes except cart tax.
   if (input.golfCartOnly) {
     const gcBase = golfCartPrice(nights);
     const gcTax = round2(gcBase * GOLF_CART_TAX_RATE);
@@ -171,7 +164,6 @@ function computeBooking(input) {
     };
   }
 
-  // ── OVERRIDE PROMO: force exact total regardless of stay/golf cart ──
   const overrideDef = promoRaw ? PROMO_CODES[promoRaw] : null;
   if (overrideDef && overrideDef.active && overrideDef.type === "override") {
     const fixedTotal = round2(overrideDef.amount);
@@ -259,7 +251,6 @@ function computeBooking(input) {
   };
 }
 
-// ─── Email notification ────────────────────────────────────────────
 function getMailer() {
   if (!process.env.NOTIFY_EMAIL_USER || !process.env.NOTIFY_EMAIL_PASS) return null;
   return nodemailer.createTransport({
@@ -272,18 +263,17 @@ async function sendBookingNotification(p, checkoutUrl) {
   const mailer = getMailer();
   if (!mailer || !process.env.NOTIFY_EMAIL_TO) return;
 
-  const subject = `New Booking: ${p.guestName || "Guest"} | ${p.checkin} → ${p.checkout} | ${p.bookingRef}`;
-  const html = `
-<h2 style="color:#0b5ea8;">New Coastal Tide Escapes Booking</h2>
+  const subject = `New Booking: ${p.guestName || "Guest"} | ${p.checkin} -> ${p.checkout} | ${p.bookingRef}`;
+  const html = `<h2 style="color:#0b5ea8;">New Coastal Tide Escapes Booking</h2>
 <table style="border-collapse:collapse;font-family:Arial,sans-serif;font-size:14px;">
-<tr><td style="padding:4px 12px 4px 0;color:#555;">Booking Ref</td><td><strong>${p.bookingRef || "—"}</strong></td></tr>
-<tr><td style="padding:4px 12px 4px 0;color:#555;">Guest Name</td><td>${p.guestName || "—"}</td></tr>
-<tr><td style="padding:4px 12px 4px 0;color:#555;">Email</td><td>${p.guestEmail || "—"}</td></tr>
-<tr><td style="padding:4px 12px 4px 0;color:#555;">Phone</td><td>${p.guestPhone || "—"}</td></tr>
-<tr><td style="padding:4px 12px 4px 0;color:#555;">Check-in</td><td>${p.checkin || "—"}</td></tr>
-<tr><td style="padding:4px 12px 4px 0;color:#555;">Check-out</td><td>${p.checkout || "—"}</td></tr>
-<tr><td style="padding:4px 12px 4px 0;color:#555;">Nights</td><td>${p.nights || "—"}</td></tr>
-<tr><td style="padding:4px 12px 4px 0;color:#555;">Guests</td><td>${p.guests || "—"}</td></tr>
+<tr><td style="padding:4px 12px 4px 0;color:#555;">Booking Ref</td><td><strong>${p.bookingRef || "-"}</strong></td></tr>
+<tr><td style="padding:4px 12px 4px 0;color:#555;">Guest Name</td><td>${p.guestName || "-"}</td></tr>
+<tr><td style="padding:4px 12px 4px 0;color:#555;">Email</td><td>${p.guestEmail || "-"}</td></tr>
+<tr><td style="padding:4px 12px 4px 0;color:#555;">Phone</td><td>${p.guestPhone || "-"}</td></tr>
+<tr><td style="padding:4px 12px 4px 0;color:#555;">Check-in</td><td>${p.checkin || "-"}</td></tr>
+<tr><td style="padding:4px 12px 4px 0;color:#555;">Check-out</td><td>${p.checkout || "-"}</td></tr>
+<tr><td style="padding:4px 12px 4px 0;color:#555;">Nights</td><td>${p.nights || "-"}</td></tr>
+<tr><td style="padding:4px 12px 4px 0;color:#555;">Guests</td><td>${p.guests || "-"}</td></tr>
 <tr><td style="padding:8px 12px 4px 0;color:#555;border-top:1px solid #eee;">Lodging</td><td style="border-top:1px solid #eee;">$${p.lodging}</td></tr>
 <tr><td style="padding:4px 12px 4px 0;color:#555;">Cleaning Fee</td><td>$${p.cleaning}</td></tr>
 ${p.promoOverride ? `<tr><td style="padding:4px 12px 4px 0;color:#555;">Special Rate</td><td style="color:#0b5ea8;">${p.promoLabel}</td></tr>` : ""}
@@ -292,15 +282,10 @@ ${(!p.promoOverride && p.promoCode) ? `<tr><td style="padding:4px 12px 4px 0;col
 ${!p.promoOverride ? `<tr><td style="padding:4px 12px 4px 0;color:#555;">Lodging Tax (7%)</td><td>$${p.lodgingTaxAmount}</td></tr>` : ""}
 ${p.golfCartSelected && !p.promoOverride ? `<tr><td style="padding:4px 12px 4px 0;color:#555;">Golf Cart (6-Seater)</td><td>$${p.golfCartBase}</td></tr>` : ""}
 ${p.golfCartSelected && !p.promoOverride ? `<tr><td style="padding:4px 12px 4px 0;color:#555;">Golf Cart Tax (7%)</td><td>$${p.golfCartTax}</td></tr>` : ""}
-<tr>
-<td style="padding:10px 12px 4px 0;color:#0b5ea8;font-weight:bold;font-size:16px;border-top:2px solid #0b5ea8;">Total Charged</td>
-<td style="padding:10px 0 4px 0;font-weight:bold;font-size:16px;color:#0b5ea8;border-top:2px solid #0b5ea8;">$${p.total}</td>
-</tr>
-<tr><td style="padding:8px 12px 4px 0;color:#555;">Rate Mode</td><td>${p.rateMode || "—"}</td></tr>
+<tr><td style="padding:10px 12px 4px 0;color:#0b5ea8;font-weight:bold;font-size:16px;border-top:2px solid #0b5ea8;">Total Charged</td><td style="padding:10px 0 4px 0;font-weight:bold;font-size:16px;color:#0b5ea8;border-top:2px solid #0b5ea8;">$${p.total}</td></tr>
+<tr><td style="padding:8px 12px 4px 0;color:#555;">Rate Mode</td><td>${p.rateMode || "-"}</td></tr>
 </table>
-<p style="margin-top:20px;font-family:Arial,sans-serif;font-size:13px;">
-<a href="${checkoutUrl}" style="color:#0b5ea8;">View Square Checkout Link</a>
-</p>`;
+<p style="margin-top:20px;font-family:Arial,sans-serif;font-size:13px;"><a href="${checkoutUrl}" style="color:#0b5ea8;">View Square Checkout Link</a></p>`;
 
   try {
     await mailer.sendMail({
@@ -314,23 +299,21 @@ ${p.golfCartSelected && !p.promoOverride ? `<tr><td style="padding:4px 12px 4px 
   }
 }
 
-// ─── Line items — ALL POSITIVE (discounts folded into net lodging) ──
 function buildLineItems(b) {
   const items = [];
 
-  // Override promo → single positive line item for the fixed total
   if (b.promoOverride) {
     const cartNote = b.golfCartSelected ? " incl. golf cart" : "";
     items.push({
-      name: `Coastal Tide Escapes Stay — Special Rate${cartNote} (${b.checkin} → ${b.checkout})`,
+      name: `Coastal Tide Escapes Stay - Special Rate${cartNote} (${b.checkin} -> ${b.checkout})`,
       quantity: "1",
       basePriceMoney: money(toCents(b.total)),
     });
     return items;
   }
 
-  const nightsLabel = b.nights ? ` • ${b.nights} night${b.nights !== 1 ? "s" : ""}` : "";
-  const datesLabel = (b.checkin && b.checkout) ? ` (${b.checkin} → ${b.checkout}${nightsLabel})` : "";
+  const nightsLabel = b.nights ? ` - ${b.nights} night${b.nights !== 1 ? "s" : ""}` : "";
+  const datesLabel = (b.checkin && b.checkout) ? ` (${b.checkin} -> ${b.checkout}${nightsLabel})` : "";
 
   const hasReduction = positiveCents(b.discountAmount) > 0 || positiveCents(b.promoDiscount) > 0;
   const lodgingName = hasReduction
@@ -369,9 +352,6 @@ function buildOrderNote(meta) {
   return parts.join(" | ");
 }
 
-// ══════════════════════════════════════════════════════════════════
-// ROUTES (all ABOVE app.listen)
-// ══════════════════════════════════════════════════════════════════
 app.get("/", (_req, res) => {
   res.json({ ok: true, service: "Coastal Tide Escapes Square checkout backend", environment: isProduction ? "production" : "sandbox" });
 });
@@ -380,9 +360,7 @@ app.post("/quote", (req, res) => {
   const result = computeBooking(req.body || {});
   if (!result.ok) return res.status(400).json({ ok: false, error: result.error });
   return res.json({ ok: true, booking: result.booking });
-});
-
-app.post("/create-checkout", async (req, res) => {
+});app.post("/create-checkout", async (req, res) => {
   try {
     if (!LOCATION_ID) return res.status(500).json({ error: "Missing SQUARE_LOCATION_ID" });
 
@@ -409,7 +387,6 @@ app.post("/create-checkout", async (req, res) => {
 
     const emailOk = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(guestEmail);
 
-    // Cart-only guests (off-site bookings) return to a dedicated confirmation page.
     const redirectUrl = b.golfCartOnly
       ? (process.env.SQUARE_GOLF_CART_REDIRECT_URL || "https://www.coastaltideescapes.com/golf-cart-confirmed")
       : (process.env.SQUARE_REDIRECT_URL || "https://www.coastaltideescapes.com/book-now");
@@ -457,9 +434,6 @@ app.post("/create-checkout", async (req, res) => {
   }
 });
 
-// Square Developer Dashboard → Webhooks:
-// URL: https://coastal-tide-backend-95by.onrender.com/square-webhook
-// Event: payment.completed
 app.post("/square-webhook", async (req, res) => {
   res.status(200).json({ ok: true });
   try {
@@ -469,4 +443,8 @@ app.post("/square-webhook", async (req, res) => {
     const payment = event?.data?.object?.payment;
     if (!payment) return;
 
-    const orderId = payment.order_
+    const orderId = payment.order_id || "";
+    const paymentId = payment.id || "";
+    const amountPaid = payment.amount_money?.amount ? Number(payment.amount_money.amount) / 100 : 0;
+
+    let bookingRef = "", guestName =
