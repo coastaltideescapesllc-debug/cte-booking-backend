@@ -127,17 +127,15 @@ function computeBooking(input) {
   const ratePlan = input.ratePlan === "floridarentals" ? "floridarentals" : "";
   const ciDate = parseDate(input.checkin);
   const coDate = parseDate(input.checkout);
-  const guests = parseInt(input.guests, 10);
-  const wantsGolfCart = !!input.golfCart;
   const promoRaw = safeString(input.promoCode).toUpperCase();
 
   if (!ciDate || !coDate) return { ok: false, error: "Please provide valid check-in and check-out dates." };
   if (coDate <= ciDate) return { ok: false, error: "Check-out must be after check-in." };
-  if (!guests || guests < 1 || guests > 9) return { ok: false, error: "Guest count must be between 1 and 9." };
 
   const nights = nightsBetween(ciDate, coDate);
   if (nights <= 0) return { ok: false, error: "Please select at least 1 night." };
 
+  // ── Golf Cart Only (off-site guests renting cart separately) ──────────────
   if (input.golfCartOnly) {
     const gcBase = golfCartPrice(nights);
     const gcTax = round2(gcBase * GOLF_CART_TAX_RATE);
@@ -146,7 +144,7 @@ function computeBooking(input) {
       booking: {
         ratePlan: "",
         checkin: isoKey(ciDate), checkout: isoKey(coDate),
-        guests, nights,
+        guests: 1, nights,
         lodging: 0,
         cleaning: 0,
         discountApplied: false, discountAmount: 0,
@@ -164,6 +162,13 @@ function computeBooking(input) {
     };
   }
 
+  // ── Guest count validation (only needed for full stay bookings) ───────────
+  const guests = parseInt(input.guests, 10);
+  if (!guests || guests < 1 || guests > 9) return { ok: false, error: "Guest count must be between 1 and 9." };
+
+  const wantsGolfCart = !!input.golfCart;
+
+  // ── Promo override ────────────────────────────────────────────────────────
   const overrideDef = promoRaw ? PROMO_CODES[promoRaw] : null;
   if (overrideDef && overrideDef.active && overrideDef.type === "override") {
     const fixedTotal = round2(overrideDef.amount);
@@ -189,6 +194,7 @@ function computeBooking(input) {
     };
   }
 
+  // ── Standard lodging calculation ──────────────────────────────────────────
   let lodging = 0, minStayRequired = 1;
   for (let i = 0; i < nights; i++) {
     const d = new Date(ciDate.getTime() + i * 86400000);
@@ -329,7 +335,7 @@ function buildLineItems(b) {
     items.push({ name: "Lodging Tax (7%)", quantity: "1", basePriceMoney: money(toCents(b.lodgingTaxAmount)) });
 
   if (positiveCents(b.golfCartBase) > 0)
-    items.push({ name: "6-Seater Golf Cart Add-On", quantity: "1", basePriceMoney: money(toCents(b.golfCartBase)) });
+    items.push({ name: "6-Seater Golf Cart Rental", quantity: "1", basePriceMoney: money(toCents(b.golfCartBase)) });
 
   if (positiveCents(b.golfCartTax) > 0)
     items.push({ name: "Golf Cart Tax (7%)", quantity: "1", basePriceMoney: money(toCents(b.golfCartTax)) });
@@ -362,7 +368,9 @@ app.post("/quote", (req, res) => {
   const result = computeBooking(req.body || {});
   if (!result.ok) return res.status(400).json({ ok: false, error: result.error });
   return res.json({ ok: true, booking: result.booking });
-});app.post("/create-checkout", async (req, res) => {
+});
+
+app.post("/create-checkout", async (req, res) => {
   try {
     if (!LOCATION_ID) return res.status(500).json({ error: "Missing SQUARE_LOCATION_ID" });
 
@@ -458,7 +466,7 @@ app.post("/square-webhook", async (req, res) => {
         const order = result && result.order;
         if (order) {
           bookingRef = order.referenceId || "";
-          constconst m = order.metadata || {};
+          const m = order.metadata || {};  // ← FIXED: was "constconst m"
           guestName = m.guestName || m.guest_name || guestName;
           guestEmail = m.guestEmail || m.guest_email || "";
           guestPhone = m.guestPhone || m.guest_phone || "";
