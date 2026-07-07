@@ -5,10 +5,13 @@ const cors = require("cors");
 const crypto = require("crypto");
 const nodemailer = require("nodemailer");
 const { Client, Environment, ApiError } = require("square");
+const { google } = require("googleapis"); // ← ADDED for giveaway Google Sheet logging
 
 const app = express();
 app.use(cors());
-app.use(express.json());
+// ← CHANGED: capture the raw body (needed to verify the Square webhook signature).
+//    req.body still parses normally everywhere, so nothing else is affected.
+app.use(express.json({ verify: (req, _res, buf) => { req.rawBody = buf; } }));
 
 const isProduction =
   String(process.env.SQUARE_ENVIRONMENT || "production").toLowerCase() !== "sandbox";
@@ -360,6 +363,123 @@ function buildOrderNote(meta) {
   return parts.join(" | ");
 }
 
+/* ==========================================================================
+   ░░ GIVEAWAY ADD-ON ░░  (Beach Stay Giveaway for the Columbus Rawlings Tigers)
+   Everything below is self-contained. Uses your same Square client, mailer,
+   and money() helper. Logs to a Google Sheet ("Entries" tab).
+   ========================================================================== */
+const GV_TIERS = {
+  t1: { count: 1, amount: 1000, label: "1 Giveaway Entry" },
+  t3: { count: 3, amount: 2500, label: "3 Giveaway Entries" },
+  t7: { count: 7, amount: 5000, label: "7 Giveaway Entries" },
+};
+const GV_PAD = (n) => String(n).padStart(4, "0");
+
+function gvSheets() {
+  const creds = JSON.parse(process.env.GOOGLE_SERVICE_ACCOUNT_JSON);
+  const auth = new google.auth.JWT(creds.client_email, null, creds.private_key, [
+    "https://www.googleapis.com/auth/spreadsheets",
+  ]);
+  return google.sheets({ version: "v4", auth });
+}
+async function gvGet(range) {
+  const r = await gvSheets().spreadsheets.values.get({ spreadsheetId: process.env.SHEET_ID, range });
+  return r.data.values || [];
+}
+async function gvAppend(range, rows) {
+  await gvSheets().spreadsheets.values.append({
+    spreadsheetId: process.env.SHEET_ID, range, valueInputOption: "RAW", requestBody: { values: rows },
+  });
+}
+async function gvMaxTicket() {
+  let m = 0;
+  for (const row of await gvGet("Entries!A2:A")) {
+    const n = parseInt(row[0], 10);
+    if (!isNaN(n) && n > m) m = n;
+  }
+  return m;
+}
+async function gvRecorded(id) {
+  return (await gvGet("Entries!H2:H")).some((r) => r[0] === id);
+}
+async function gvEmailTickets(name, email, tickets) {
+  const mailer = getMailer();
+  if (!mailer || !email) return;
+  const list = tickets.map((t) => "#" + GV_PAD(t)).join(", ");
+  await mailer.sendMail({
+    from: "Coastal Tide Escapes <" + process.env.NOTIFY_EMAIL_USER + ">",
+    to: email,
+    subject: "Your Beach Stay Giveaway " + (tickets.length > 1 ? "tickets" : "ticket") + " (" + list + ")",
+    html:
+      "<div style='font-family:Georgia,serif;max-width:520px;margin:auto;color:#26333f'>" +
+      "<h2 style='color:#1E3A5F'>You're entered! &#127903;</h2>" +
+      "<p>Hi " + (name || "there") + ", thanks for supporting the <b>Columbus Rawlings Tigers</b>. " +
+      "Your entry into the Coastal Tide Escapes Beach Stay Giveaway is confirmed.</p>" +
+      "<p style='font-size:1.15rem'><b>Your ticket " + (tickets.length > 1 ? "numbers" : "number") + ":</b> " +
+      "<span style='color:#C9531A;font-weight:bold'>" + list + "</span></p>" +
+      "<p>Winner drawn <b>August 3, 2026 at 7:00 PM ET</b> and notified by phone/email. " +
+      "No purchase was necessary to enter — see the Official Rules on our site.</p>" +
+      "<p style='color:#6a7480;font-size:.85rem'>Coastal Tide Escapes, LLC &middot; Panama City Beach, FL</p></div>",
+  });
+}
+
+// Returns true if this payment was a giveaway entry (and was handled here).
+async function handleGiveawayWebhook(payment) {
+  try {
+    const paymentId = payment.id;
+    const orderId = payment.order_id;
+    const amount = (payment.amount_money && payment.amount_money.amount) ? Number(payment.amount_money.amount) : 0;
+
+    let meta = {}, entryRef = "";
+    try {
+      const { result } = await client.ordersApi.retrieveOrder(orderId);
+      const order = result && result.order;
+      meta = (order && order.metadata) || {};
+      entryRef = (order && order.referenceId) || "";
+    } catch (e) {
+      console.error("Giveaway: order retrieve failed:", e.message);
+      return false;
+    }
+
+    if (meta.type !== "giveaway") return false;         // not a giveaway payment → let booking logic run
+    if (await gvRecorded(paymentId)) return true;        // idempotent (webhook retries)
+
+    const count = parseInt(meta.count, 10) || 1;
+    const name = meta.gvName || "";
+    const email = meta.gvEmail || "";
+    const phone = meta.gvPhone || "";
+    const tier = meta.tier || "";
+
+    const start = (await gvMaxTicket()) + 1;
+    const tickets = [], rows = [], ts = new Date().toISOString();
+    for (let i = 0; i < count; i++) {
+      const num = start + i;
+      tickets.push(num);
+      rows.push([num, name, email, phone, "PAID", tier, (amount / 100).toFixed(2), paymentId, entryRef, ts]);
+    }
+    await gvAppend("Entries!A:J", rows);
+    await gvEmailTickets(name, email, tickets);
+
+    const mailer = getMailer();
+    if (mailer && process.env.NOTIFY_EMAIL_TO) {
+      try {
+        await mailer.sendMail({
+          from: "Coastal Tide Escapes <" + process.env.NOTIFY_EMAIL_USER + ">",
+          to: process.env.NOTIFY_EMAIL_TO,
+          subject: "New giveaway entry",
+          text: (name || email) + " — " + count + " entr" + (count > 1 ? "ies" : "y") +
+                ", tickets #" + GV_PAD(tickets[0]) + "-#" + GV_PAD(tickets[tickets.length - 1]) + ".",
+        });
+      } catch (_) {}
+    }
+    return true;
+  } catch (err) {
+    console.error("handleGiveawayWebhook error:", err.message);
+    return true; // treat as handled so a giveaway payment never falls into booking logic
+  }
+}
+/* ░░ END GIVEAWAY HELPERS ░░ */
+
 app.get("/", (_req, res) => {
   res.json({ ok: true, service: "Coastal Tide Escapes Square checkout backend", environment: isProduction ? "production" : "sandbox" });
 });
@@ -444,11 +564,101 @@ app.post("/create-checkout", async (req, res) => {
   }
 });
 
+/* ── GIVEAWAY ROUTE: site form calls this to start a $10/$25/$50 entry ── */
+app.post("/giveaway/create-checkout", async (req, res) => {
+  try {
+    if (!LOCATION_ID) return res.status(500).json({ error: "Missing SQUARE_LOCATION_ID" });
+    const { name, email, phone, tier } = req.body || {};
+    const t = GV_TIERS[tier];
+    if (!t) return res.status(400).json({ error: "invalid tier" });
+    const buyerEmail = safeString(email);
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(buyerEmail)) return res.status(400).json({ error: "valid email required" });
+
+    const entryRef = "CTE-GIVE-" + crypto.randomBytes(4).toString("hex").toUpperCase();
+    const body = {
+      idempotencyKey: crypto.randomUUID(),
+      order: {
+        locationId: LOCATION_ID,
+        referenceId: entryRef,
+        lineItems: [{ name: t.label, quantity: "1", basePriceMoney: money(t.amount) }],
+        metadata: {
+          type: "giveaway", tier, count: String(t.count),
+          gvName: safeString(name), gvEmail: buyerEmail, gvPhone: safeString(phone),
+        },
+      },
+      checkoutOptions: {
+        askForShippingAddress: false,
+        merchantSupportEmail: process.env.SQUARE_SUPPORT_EMAIL || "coastaltideescapesllc@gmail.com",
+        redirectUrl: process.env.GIVEAWAY_THANK_YOU_URL || "https://coastaltideescapes.com/beach-stay-giveaway?paid=1",
+      },
+      prePopulatedData: { buyerEmail, buyerPhoneNumber: safeString(phone) || undefined },
+    };
+
+    const response = await checkoutApi.createPaymentLink(body);
+    const pl = response.result && response.result.paymentLink;
+    if (!pl || !pl.url) return res.status(500).json({ error: "Square did not return a checkout URL" });
+    return res.json({ url: pl.url });
+  } catch (err) {
+    console.error("Giveaway checkout error:", JSON.stringify((err && err.result) || (err && err.message) || err, null, 2));
+    return res.status(500).json({ error: (err && err.message) || "server error" });
+  }
+});
+
+/* ── GIVEAWAY ROUTE: add a mailed-in FREE entry (admin) ── */
+app.post("/giveaway/free-entry", async (req, res) => {
+  if (req.header("x-admin-key") !== process.env.GIVEAWAY_ADMIN_KEY) return res.status(401).json({ error: "unauthorized" });
+  const { name, email, phone } = req.body || {};
+  if (!name) return res.status(400).json({ error: "name required" });
+  const num = (await gvMaxTicket()) + 1;
+  await gvAppend("Entries!A:J", [[num, safeString(name), safeString(email), safeString(phone), "FREE", "mail-in", "0.00", "", "", new Date().toISOString()]]);
+  if (email) await gvEmailTickets(name, email, [num]);
+  res.json({ ticket: GV_PAD(num) });
+});
+
+/* ── GIVEAWAY ROUTE: draw a random winner (admin) ── */
+app.get("/giveaway/draw", async (req, res) => {
+  if (req.query.key !== process.env.GIVEAWAY_ADMIN_KEY) return res.status(401).json({ error: "unauthorized" });
+  const entries = (await gvGet("Entries!A2:E")).filter((r) => r[0]);
+  if (!entries.length) return res.json({ error: "no entries yet" });
+  const w = entries[Math.floor(Math.random() * entries.length)];
+  res.json({ totalEntries: entries.length, winningTicket: GV_PAD(parseInt(w[0], 10)), name: w[1], email: w[2], phone: w[3], type: w[4] });
+});
+
 app.post("/square-webhook", async (req, res) => {
+  // ── Optional signature verification. Active only once you set BOTH
+  //    SQUARE_WEBHOOK_SIGNATURE_KEY and SQUARE_WEBHOOK_URL (recommended).
+  //    If unset, behaves exactly as before (no verification).
+  if (process.env.SQUARE_WEBHOOK_SIGNATURE_KEY && process.env.SQUARE_WEBHOOK_URL) {
+    try {
+      const sig = req.header("x-square-hmacsha256-signature") || "";
+      const raw = req.rawBody ? req.rawBody.toString("utf8") : JSON.stringify(req.body || {});
+      const expected = crypto
+        .createHmac("sha256", process.env.SQUARE_WEBHOOK_SIGNATURE_KEY)
+        .update(process.env.SQUARE_WEBHOOK_URL + raw)
+        .digest("base64");
+      const valid = sig.length === expected.length && crypto.timingSafeEqual(Buffer.from(sig), Buffer.from(expected));
+      if (!valid) return res.sendStatus(403);
+    } catch (e) {
+      return res.sendStatus(403);
+    }
+  }
+
   res.status(200).json({ ok: true });
   try {
     const event = req.body;
-    if (!event || event.type !== "payment.completed") return;
+    if (!event) return;
+
+    // ── GIVEAWAY branch: completed giveaway payments get ticket numbers ──
+    if (event.type === "payment.updated" || event.type === "payment.created") {
+      const gp = event.data && event.data.object && event.data.object.payment;
+      if (gp && gp.status === "COMPLETED" && gp.order_id) {
+        const handled = await handleGiveawayWebhook(gp);
+        if (handled) return; // giveaway payment done; don't run booking logic
+      }
+    }
+
+    // ── EXISTING BOOKING logic (unchanged) ──
+    if (event.type !== "payment.completed") return;
 
     const payment = event && event.data && event.data.object && event.data.object.payment;
     if (!payment) return;
@@ -466,7 +676,7 @@ app.post("/square-webhook", async (req, res) => {
         const order = result && result.order;
         if (order) {
           bookingRef = order.referenceId || "";
-          const m = order.metadata || {};  // ← FIXED: was "constconst m"
+          const m = order.metadata || {};
           guestName = m.guestName || m.guest_name || guestName;
           guestEmail = m.guestEmail || m.guest_email || "";
           guestPhone = m.guestPhone || m.guest_phone || "";
