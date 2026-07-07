@@ -591,7 +591,7 @@ app.post("/giveaway/create-checkout", async (req, res) => {
         merchantSupportEmail: process.env.SQUARE_SUPPORT_EMAIL || "coastaltideescapesllc@gmail.com",
         redirectUrl: process.env.GIVEAWAY_THANK_YOU_URL || "https://coastaltideescapes.com/beach-stay-giveaway?paid=1",
       },
-      prePopulatedData: { buyerEmail, buyerPhoneNumber: safeString(phone) || undefined },
+      prePopulatedData: { buyerEmail },
     };
 
     const response = await checkoutApi.createPaymentLink(body);
