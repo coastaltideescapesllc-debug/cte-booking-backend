@@ -634,21 +634,33 @@ app.get("/giveaway/backfill", async (req, res) => {
     const days = Math.min(parseInt(req.query.days, 10) || 14, 90);
     const beginTime = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString();
     const loc = (LOCATION_ID || "").trim();          // guard against stray newline/whitespace
-    let cursor, recovered = [], scanned = 0, guard = 0;
+    let cursor, guard = 0;
+    const all = [];
+
+    // Square SDK v39 positional signature:
+    //   listPayments(beginTime, endTime, sortOrder, cursor, locationId, ...)
+    // Passing `undefined` for middle args yields a malformed query string, so we
+    // request only beginTime + cursor, then filter/sort ourselves.
     do {
-      const { result } = await client.paymentsApi.listPayments(beginTime, undefined, "ASC", cursor, loc || undefined);
-      const payments = result.payments || [];
-      for (const p of payments) {
-        scanned++;
-        if (p.status !== "COMPLETED") continue;
-        const amt = (p.amountMoney && p.amountMoney.amount) ? Number(p.amountMoney.amount) : 0;
-        const r = await issueGiveawayTickets(p.id, p.orderId, amt);
-        if (r.status === "ok") recovered.push({ payment: p.id, name: r.name, email: r.email, tickets: r.tickets.map(GV_PAD) });
-      }
+      const { result } = await client.paymentsApi.listPayments(beginTime, undefined, undefined, cursor);
+      for (const p of (result.payments || [])) all.push(p);
       cursor = result.cursor;
       guard++;
     } while (cursor && guard < 10);
-    res.json({ scanned, recoveredCount: recovered.length, recovered });
+
+    // oldest first, so ticket numbers follow purchase order
+    const eligible = all
+      .filter((p) => p.status === "COMPLETED")
+      .filter((p) => !loc || !p.locationId || p.locationId === loc)
+      .sort((a, b) => new Date(a.createdAt) - new Date(b.createdAt));
+
+    const recovered = [];
+    for (const p of eligible) {
+      const amt = (p.amountMoney && p.amountMoney.amount) ? Number(p.amountMoney.amount) : 0;
+      const r = await issueGiveawayTickets(p.id, p.orderId, amt);
+      if (r.status === "ok") recovered.push({ payment: p.id, name: r.name, email: r.email, tickets: r.tickets.map(GV_PAD) });
+    }
+    res.json({ scanned: all.length, eligible: eligible.length, recoveredCount: recovered.length, recovered });
   } catch (err) {
     const detail = (err && err.errors) ? err.errors
                  : (err && err.result && err.result.errors) ? err.result.errors
