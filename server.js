@@ -1,4 +1,4 @@
-require("dotenv").config(); 
+require("dotenv").config();
 
 const express = require("express");
 const cors = require("cors");
@@ -383,12 +383,12 @@ function gvSheets() {
   return google.sheets({ version: "v4", auth });
 }
 async function gvGet(range) {
-  const r = await gvSheets().spreadsheets.values.get({ spreadsheetId: process.env.SHEET_ID, range });
+  const r = await gvSheets().spreadsheets.values.get({ spreadsheetId: (process.env.SHEET_ID || "").trim(), range });
   return r.data.values || [];
 }
 async function gvAppend(range, rows) {
   await gvSheets().spreadsheets.values.append({
-    spreadsheetId: process.env.SHEET_ID, range, valueInputOption: "RAW", requestBody: { values: rows },
+    spreadsheetId: (process.env.SHEET_ID || "").trim(), range, valueInputOption: "RAW", requestBody: { values: rows },
   });
 }
 async function gvMaxTicket() {
@@ -613,6 +613,35 @@ app.post("/giveaway/free-entry", async (req, res) => {
   await gvAppend("Entries!A:J", [[num, safeString(name), safeString(email), safeString(phone), "FREE", "mail-in", "0.00", "", "", new Date().toISOString()]]);
   if (email) await gvEmailTickets(name, email, [num]);
   res.json({ ticket: GV_PAD(num) });
+});
+
+/* ── GIVEAWAY ROUTE: diagnose the Google Sheet connection ──
+   Call: GET /giveaway/sheet-check?key=YOUR_GIVEAWAY_ADMIN_KEY
+   Tells you: is SHEET_ID readable, what tabs exist, and is "Entries" among them. */
+app.get("/giveaway/sheet-check", async (req, res) => {
+  if (req.query.key !== process.env.GIVEAWAY_ADMIN_KEY) return res.status(401).json({ error: "unauthorized" });
+  const out = {
+    sheetIdSeen: (process.env.SHEET_ID || "").trim(),
+    sheetIdLength: (process.env.SHEET_ID || "").length,
+    serviceAccount: null,
+  };
+  try {
+    out.serviceAccount = JSON.parse(process.env.GOOGLE_SERVICE_ACCOUNT_JSON).client_email;
+  } catch (e) {
+    out.serviceAccountError = "GOOGLE_SERVICE_ACCOUNT_JSON is missing or not valid JSON";
+  }
+  try {
+    const meta = await gvSheets().spreadsheets.get({ spreadsheetId: (process.env.SHEET_ID || "").trim() });
+    out.spreadsheetTitle = meta.data.properties && meta.data.properties.title;
+    out.tabs = (meta.data.sheets || []).map((s) => s.properties.title);
+    out.hasEntriesTab = out.tabs.includes("Entries");
+    out.result = out.hasEntriesTab ? "OK — sheet opens and Entries tab found" : "Sheet opens, but NO tab named exactly 'Entries'";
+    return res.json(out);
+  } catch (err) {
+    out.result = "FAILED to open spreadsheet";
+    out.error = (err && err.errors) ? err.errors : (err && err.message) || String(err);
+    return res.status(500).json(out);
+  }
 });
 
 /* ── GIVEAWAY ROUTE: draw a random winner (admin) ── */
