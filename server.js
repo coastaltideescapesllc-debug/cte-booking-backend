@@ -633,9 +633,10 @@ app.get("/giveaway/backfill", async (req, res) => {
   try {
     const days = Math.min(parseInt(req.query.days, 10) || 14, 90);
     const beginTime = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString();
+    const loc = (LOCATION_ID || "").trim();          // guard against stray newline/whitespace
     let cursor, recovered = [], scanned = 0, guard = 0;
     do {
-      const { result } = await client.paymentsApi.listPayments(beginTime, undefined, "ASC", cursor, LOCATION_ID);
+      const { result } = await client.paymentsApi.listPayments(beginTime, undefined, "ASC", cursor, loc || undefined);
       const payments = result.payments || [];
       for (const p of payments) {
         scanned++;
@@ -649,8 +650,11 @@ app.get("/giveaway/backfill", async (req, res) => {
     } while (cursor && guard < 10);
     res.json({ scanned, recoveredCount: recovered.length, recovered });
   } catch (err) {
-    console.error("backfill error:", err.message);
-    res.status(500).json({ error: err.message });
+    const detail = (err && err.errors) ? err.errors
+                 : (err && err.result && err.result.errors) ? err.result.errors
+                 : (err && err.message) || String(err);
+    console.error("backfill error:", JSON.stringify(detail));
+    res.status(500).json({ error: "backfill failed", detail });
   }
 });
 
