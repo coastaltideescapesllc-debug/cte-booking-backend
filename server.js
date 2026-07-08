@@ -423,59 +423,59 @@ async function gvEmailTickets(name, email, tickets) {
   });
 }
 
-// Returns true if this payment was a giveaway entry (and was handled here).
+// Core: given a payment's ids + amount (cents), issue tickets if it's a giveaway order.
+// Returns {status:"ok",...} | {status:"skip",reason} | {status:"error",reason}
+async function issueGiveawayTickets(paymentId, orderId, amountCents) {
+  if (!orderId) return { status: "skip", reason: "no order id" };
+  let meta = {}, entryRef = "";
+  try {
+    const { result } = await client.ordersApi.retrieveOrder(orderId);
+    const order = result && result.order;
+    meta = (order && order.metadata) || {};
+    entryRef = (order && order.referenceId) || "";
+  } catch (e) {
+    console.error("Giveaway: order retrieve failed:", e.message);
+    return { status: "error", reason: e.message };
+  }
+  if (meta.type !== "giveaway") return { status: "skip", reason: "not giveaway" };
+  if (await gvRecorded(paymentId)) return { status: "skip", reason: "already recorded" };
+
+  const count = parseInt(meta.count, 10) || 1;
+  const name = meta.gvName || "", email = meta.gvEmail || "", phone = meta.gvPhone || "", tier = meta.tier || "";
+  const start = (await gvMaxTicket()) + 1;
+  const tickets = [], rows = [], ts = new Date().toISOString();
+  for (let i = 0; i < count; i++) {
+    const num = start + i;
+    tickets.push(num);
+    rows.push([num, name, email, phone, "PAID", tier, (amountCents / 100).toFixed(2), paymentId, entryRef, ts]);
+  }
+  await gvAppend("Entries!A:J", rows);
+  await gvEmailTickets(name, email, tickets);
+
+  const mailer = getMailer();
+  if (mailer && process.env.NOTIFY_EMAIL_TO) {
+    try {
+      await mailer.sendMail({
+        from: "Coastal Tide Escapes <" + process.env.NOTIFY_EMAIL_USER + ">",
+        to: process.env.NOTIFY_EMAIL_TO,
+        subject: "New giveaway entry",
+        text: (name || email) + " — " + count + " entr" + (count > 1 ? "ies" : "y") +
+              ", tickets #" + GV_PAD(tickets[0]) + "-#" + GV_PAD(tickets[tickets.length - 1]) + ".",
+      });
+    } catch (_) {}
+  }
+  return { status: "ok", tickets, name, email, count };
+}
+
+// Webhook wrapper: returns true if this was a giveaway payment (handled here).
 async function handleGiveawayWebhook(payment) {
   try {
-    const paymentId = payment.id;
-    const orderId = payment.order_id;
     const amount = (payment.amount_money && payment.amount_money.amount) ? Number(payment.amount_money.amount) : 0;
-
-    let meta = {}, entryRef = "";
-    try {
-      const { result } = await client.ordersApi.retrieveOrder(orderId);
-      const order = result && result.order;
-      meta = (order && order.metadata) || {};
-      entryRef = (order && order.referenceId) || "";
-    } catch (e) {
-      console.error("Giveaway: order retrieve failed:", e.message);
-      return false;
-    }
-
-    if (meta.type !== "giveaway") return false;         // not a giveaway payment → let booking logic run
-    if (await gvRecorded(paymentId)) return true;        // idempotent (webhook retries)
-
-    const count = parseInt(meta.count, 10) || 1;
-    const name = meta.gvName || "";
-    const email = meta.gvEmail || "";
-    const phone = meta.gvPhone || "";
-    const tier = meta.tier || "";
-
-    const start = (await gvMaxTicket()) + 1;
-    const tickets = [], rows = [], ts = new Date().toISOString();
-    for (let i = 0; i < count; i++) {
-      const num = start + i;
-      tickets.push(num);
-      rows.push([num, name, email, phone, "PAID", tier, (amount / 100).toFixed(2), paymentId, entryRef, ts]);
-    }
-    await gvAppend("Entries!A:J", rows);
-    await gvEmailTickets(name, email, tickets);
-
-    const mailer = getMailer();
-    if (mailer && process.env.NOTIFY_EMAIL_TO) {
-      try {
-        await mailer.sendMail({
-          from: "Coastal Tide Escapes <" + process.env.NOTIFY_EMAIL_USER + ">",
-          to: process.env.NOTIFY_EMAIL_TO,
-          subject: "New giveaway entry",
-          text: (name || email) + " — " + count + " entr" + (count > 1 ? "ies" : "y") +
-                ", tickets #" + GV_PAD(tickets[0]) + "-#" + GV_PAD(tickets[tickets.length - 1]) + ".",
-        });
-      } catch (_) {}
-    }
-    return true;
+    const r = await issueGiveawayTickets(payment.id, payment.order_id, amount);
+    return !(r.status === "skip" && r.reason === "not giveaway"); // handled unless it wasn't a giveaway order
   } catch (err) {
     console.error("handleGiveawayWebhook error:", err.message);
-    return true; // treat as handled so a giveaway payment never falls into booking logic
+    return true;
   }
 }
 /* ░░ END GIVEAWAY HELPERS ░░ */
@@ -622,6 +622,36 @@ app.get("/giveaway/draw", async (req, res) => {
   if (!entries.length) return res.json({ error: "no entries yet" });
   const w = entries[Math.floor(Math.random() * entries.length)];
   res.json({ totalEntries: entries.length, winningTicket: GV_PAD(parseInt(w[0], 10)), name: w[1], email: w[2], phone: w[3], type: w[4] });
+});
+
+/* ── GIVEAWAY ROUTE: recover paid entries from Square that never logged ──
+   Safe to run repeatedly — already-logged payments are skipped. Processes
+   oldest first so ticket numbers follow purchase order.
+   Call: GET /giveaway/backfill?key=YOUR_GIVEAWAY_ADMIN_KEY  (&days=14 optional) */
+app.get("/giveaway/backfill", async (req, res) => {
+  if (req.query.key !== process.env.GIVEAWAY_ADMIN_KEY) return res.status(401).json({ error: "unauthorized" });
+  try {
+    const days = Math.min(parseInt(req.query.days, 10) || 14, 90);
+    const beginTime = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString();
+    let cursor, recovered = [], scanned = 0, guard = 0;
+    do {
+      const { result } = await client.paymentsApi.listPayments(beginTime, undefined, "ASC", cursor, LOCATION_ID);
+      const payments = result.payments || [];
+      for (const p of payments) {
+        scanned++;
+        if (p.status !== "COMPLETED") continue;
+        const amt = (p.amountMoney && p.amountMoney.amount) ? Number(p.amountMoney.amount) : 0;
+        const r = await issueGiveawayTickets(p.id, p.orderId, amt);
+        if (r.status === "ok") recovered.push({ payment: p.id, name: r.name, email: r.email, tickets: r.tickets.map(GV_PAD) });
+      }
+      cursor = result.cursor;
+      guard++;
+    } while (cursor && guard < 10);
+    res.json({ scanned, recoveredCount: recovered.length, recovered });
+  } catch (err) {
+    console.error("backfill error:", err.message);
+    res.status(500).json({ error: err.message });
+  }
 });
 
 app.post("/square-webhook", async (req, res) => {
